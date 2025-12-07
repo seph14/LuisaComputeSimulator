@@ -179,6 +179,7 @@ void load_scene_params_from_json(std::vector<WorldData>& shell_list, const std::
     get_bool("use_gpu", lcs::get_scene_params().use_gpu);
     get_bool("use_self_collision", lcs::get_scene_params().use_self_collision);
     get_bool("use_ccd_linesearch", lcs::get_scene_params().use_ccd_linesearch);
+    get_bool("use_energy_linesearch", lcs::get_scene_params().use_energy_linesearch);
 
     get_real("implicit_dt", lcs::get_scene_params().implicit_dt);
     get_real("stiffness_collision", lcs::get_scene_params().stiffness_collision);
@@ -451,6 +452,9 @@ void load_scene_params_from_json(std::vector<WorldData>& shell_list, const std::
                         v = yyjson_obj_get(mat_obj, "thickness");
                         if (v && yyjson_is_num(v))
                             mat.thickness = static_cast<float>(yyjson_get_num(v));
+                        v = yyjson_obj_get(mat_obj, "friction_mu");
+                        if (v && yyjson_is_num(v))
+                            mat.friction_mu = static_cast<float>(yyjson_get_num(v));
 
                         // stretch_model may be string or integer
                         v = yyjson_obj_get(mat_obj, "stretch_model");
@@ -525,6 +529,9 @@ void load_scene_params_from_json(std::vector<WorldData>& shell_list, const std::
                         v = yyjson_obj_get(mat_obj, "d_hat");
                         if (v && yyjson_is_num(v))
                             mat.d_hat = static_cast<float>(yyjson_get_num(v));
+                        v = yyjson_obj_get(mat_obj, "friction_mu");
+                        if (v && yyjson_is_num(v))
+                            mat.friction_mu = static_cast<float>(yyjson_get_num(v));
 
                         info.set_physics_material(mat);
                         if (stype == nullptr)
@@ -556,6 +563,9 @@ void load_scene_params_from_json(std::vector<WorldData>& shell_list, const std::
                         v = yyjson_obj_get(mat_obj, "d_hat");
                         if (v && yyjson_is_num(v))
                             mat.d_hat = static_cast<float>(yyjson_get_num(v));
+                        v = yyjson_obj_get(mat_obj, "friction_mu");
+                        if (v && yyjson_is_num(v))
+                            mat.friction_mu = static_cast<float>(yyjson_get_num(v));
                         v = yyjson_obj_get(mat_obj, "thickness");
                         if (v && yyjson_is_num(v))
                             mat.thickness = static_cast<float>(yyjson_get_num(v));
@@ -599,6 +609,9 @@ void load_scene_params_from_json(std::vector<WorldData>& shell_list, const std::
                         v = yyjson_obj_get(mat_obj, "radius");
                         if (v && yyjson_is_num(v))
                             mat.radius = static_cast<float>(yyjson_get_num(v));
+                        v = yyjson_obj_get(mat_obj, "friction_mu");
+                        if (v && yyjson_is_num(v))
+                            mat.friction_mu = static_cast<float>(yyjson_get_num(v));
 
                         info.set_physics_material(mat);
                         if (stype == nullptr)

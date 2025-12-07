@@ -1,4 +1,4 @@
-# LuisaComputeSolver: Physics Simulation Based on LuisaCompute
+# LuisaComputeSolver: Physics Simulator Based on LuisaCompute
 
 ![Teaser](Document/README1.png)
 
@@ -91,6 +91,7 @@ More building guidance about computing backend can be found in [the document of 
 
 |       |   |
 |  -----   |------|
+|          |      |
 | Moving Dirichlet Case |  |
 | ![Case0Bg](Document/Images/0_bg.png) [File](Resources/Scenes/cloth_moving_boundary.json) |  ![Teaser](Document/Images/0_ed.png) (The velocity of red plane is 3m/s )  |    
 |  Different Material Properties | Cloth-Rigid Coupling  Case 1 |
@@ -101,19 +102,23 @@ More building guidance about computing backend can be found in [the document of 
 | ![Case6](Document/Images/6.png) [File](Resources/Scenes/cloth_rotation_cylinder_88K.json)   |  ![Case9](Document/Images/9.png) [File](Resources/Scenes/cloth_unit_test_square2.json) |
 |   Multi-Rigid-Body Case 1 | Multi-Rigid-Body Case 2 |
 | ![Case11](Document/Images/11.png)  [File](Resources/Scenes/rigid_bucket.json)  |  ![Case13](Document/Images/13.png) [File](Resources/Scenes/rigid_multi_folding_cubes.json) |
+|  Friciontal Test |  |
+| ![Case11](Document/Images/18.png)  [File](Resources/Scenes/rigid_frictional_test.json)  |  |
 
 ## TODOLIST
 
 - [ ] Python Binding
-- [ ] Frictional Contact
-- [ ] Strain Limiting
-- [ ] Thin Shell Rigid-Body Simulation
 - [ ] Deformable Body Energy (And atomatic tet mesh generation)
 - [ ] Elastic Rod Energy
+- [ ] Strain Limiting
+- [ ] Consistent Solve
+- [ ] Replace All Constraint With Bindless-Group
+- [ ] Thin Shell Rigid-Body Simulation
 - [ ] Upper/Lower-Triangle of System Matrix Optimization
 - [ ] GPU-based Global Triplet Sorting (For Matrix Assembly)
+- [ ] Mesh Split
+- [ ] Accurate Frictional Modeling
 - [ ] Better Numerical Preconditioners
-
 
 
 ## References
@@ -128,4 +133,4 @@ More building guidance about computing backend can be found in [the document of 
 
 ## Others
 
-Thanks to LuisaCompute and Libuipc community, their open-source spirit has propelled the advancement of graphics and embodied intelligence.
+Thanks to LuisaCompute and Libuipc community, their open-source spirit has propelled the advancement of the reality.

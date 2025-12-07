@@ -3,6 +3,7 @@
 #include <Eigen/Eigenvalues>
 #include "CollisionDetector/cipc_kernel.hpp"
 #include "CollisionDetector/distance.hpp"
+#include "CollisionDetector/friction_kernel.hpp"
 #include "Core/affine_position.h"
 #include "Core/float_n.h"
 #include "Energy/bending_energy.h"
@@ -883,12 +884,14 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
     compiler.compile<1>(
         fn_evaluate_ground_collision,
         [sa_x                           = sim_data->sa_x.view(),
+         sa_x_step_start                = sim_data->sa_x_step_start.view(),
          sa_rest_vert_area              = mesh_data->sa_rest_vert_area.view(),
          sa_cgB                         = sim_data->sa_cgB.view(),
          sa_cgA_diag                    = sim_data->sa_cgA_diag.view(),
          sa_is_fixed                    = mesh_data->sa_is_fixed.view(),
          sa_contact_active_verts_offset = sim_data->sa_contact_active_verts_offset.view(),
-         sa_contact_active_verts_d_hat  = sim_data->sa_contact_active_verts_d_hat.view()](
+         sa_contact_active_verts_d_hat  = sim_data->sa_contact_active_verts_d_hat.view(),
+         sa_contact_active_verts_friction_coeff = sim_data->sa_contact_active_verts_friction_coeff.view()](
             Float floor_y, Bool use_ground_collision, Float stiffness, Uint collision_type)
         {
             const UInt vid = dispatch_id().x;
@@ -902,8 +905,8 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
                     Float thickness = sa_contact_active_verts_offset->read(vid);
                     Float dist      = x_k.y - floor_y;
 
-                    Float3   force   = sa_cgB->read(vid);
-                    Float3x3 hessian = sa_cgA_diag->read(vid);
+                    Float3   grad = make_float3(0.0f);
+                    Float3x3 hess = make_float3x3(0.0f);
                     $if(dist - thickness < d_hat)
                     {
                         // Float  C      = d_hat + thickness - diff;
@@ -923,6 +926,23 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
                             k1 = stiff * ipc::barrier_first_derivative(dist - thickness, d_hat);
                             k2 = stiff * ipc::barrier_second_derivative(dist - thickness, d_hat);
                         };
+
+                        // Friction
+                        {
+                            Float3 x_0          = sa_x_step_start->read(vid);
+                            Float3 dv           = x_k - x_0;
+                            Float  friction_mu  = sa_contact_active_verts_friction_coeff->read(vid);
+                            Float  friction_eps = Friction::ando_barrier::friction_eps;
+                            // auto   lambda_P     = Friction::ando_barrier::get_friction_lambda_P(
+                            //     k1 * normal, dv, normal, friction_mu, friction_eps);
+                            // auto friction_grad_hess =
+                            //     Friction::ando_barrier::compute_gradient_hessian(lambda_P, dv);
+                            auto lambda_mu = -k1 * friction_mu;
+                            auto friction_grad_hess = Friction::ipc_barrier::compute_friction_gradient_hessian(
+                                lambda_mu, normal, dv, friction_eps);
+                            grad += friction_grad_hess.first;
+                            hess += friction_grad_hess.second;
+                        }
                         // device_log("Vert {} ground collision: dist = {}, force = {}, thickness = {}, d_hat = {}, k1 = {}, k2 = {}",
                         //            vid,
                         //            dist,
@@ -939,11 +959,11 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
                         //                thickness,
                         //                d_hat);
                         // };
-                        force -= k1 * normal;
-                        hessian += k2 * outer_product(normal, normal);
+                        grad += k1 * normal;
+                        hess += k2 * outer_product(normal, normal);
                     };
-                    sa_cgB->write(vid, force);
-                    sa_cgA_diag->write(vid, hessian);
+                    sa_cgB->write(vid, sa_cgB->read(vid) - grad);
+                    sa_cgA_diag->write(vid, sa_cgA_diag->read(vid) + hess);
                 };
             };
         },
@@ -1005,11 +1025,11 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
             [sa_x = sim_data->sa_x.view(),
              // sa_cgB = sim_data->sa_cgB.view(),
              // sa_cgA_diag = sim_data->sa_cgA_diag.view(),
-             output_gradient_ptr = sim_data->sa_stretch_springs_gradients.view(),
-             output_hessian_ptr  = sim_data->sa_stretch_springs_hessians.view(),
-             sa_edges            = sim_data->sa_stretch_springs.view(),
-             sa_rest_length      = sim_data->sa_stretch_spring_rest_state_length.view(),
-             sa_stretch_spring_stiffness = sim_data->sa_stretch_spring_stiffness.view()](const Float stiffness_stretch)
+             output_gradient_ptr         = sim_data->sa_stretch_springs_gradients.view(),
+             output_hessian_ptr          = sim_data->sa_stretch_springs_hessians.view(),
+             sa_edges                    = sim_data->sa_stretch_springs.view(),
+             sa_rest_length              = sim_data->sa_stretch_spring_rest_state_length.view(),
+             sa_stretch_spring_stiffness = sim_data->sa_stretch_spring_stiffness.view()]()
             {
                 const UInt eid  = dispatch_id().x;
                 UInt2      edge = sa_edges->read(eid);
@@ -1336,14 +1356,16 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
             fn_evaluate_abd_ground_collision,
             [sa_scaled_model_x              = mesh_data->sa_scaled_model_x.view(),
              sa_x                           = sim_data->sa_x.view(),
+             sa_x_step_start                = sim_data->sa_x_step_start.view(),
              abd_q                          = sim_data->sa_affine_bodies_q.view(),
              abd_perVert_body_id            = sim_data->sa_vert_affine_bodies_id.view(),
              sa_rest_vert_area              = mesh_data->sa_rest_vert_area.view(),
              sa_contact_active_verts_offset = sim_data->sa_contact_active_verts_offset.view(),
              sa_contact_active_verts_d_hat  = sim_data->sa_contact_active_verts_d_hat.view(),
-             abd_gradients                  = sim_data->sa_affine_bodies_gradients.view(),
-             abd_hessians                   = sim_data->sa_affine_bodies_hessians.view(),
-             sa_is_fixed                    = mesh_data->sa_is_fixed.view()](
+             sa_contact_active_verts_friction_coeff = sim_data->sa_contact_active_verts_friction_coeff.view(),
+             abd_gradients = sim_data->sa_affine_bodies_gradients.view(),
+             abd_hessians  = sim_data->sa_affine_bodies_hessians.view(),
+             sa_is_fixed   = mesh_data->sa_is_fixed.view()](
                 Float floor_y, Bool use_ground_collision, Float stiffness, Uint vid_start, Uint collision_type)
             {
                 const UInt vid = vid_start + dispatch_id().x;
@@ -1379,8 +1401,25 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
                                 k2 = stiff * ipc::barrier_second_derivative(dist - thickness, d_hat);
                             };
 
-                            Float3   gradient = k1 * normal;
-                            Float3x3 hessian  = k2 * outer_product(normal, normal);
+                            Float3   grad = k1 * normal;
+                            Float3x3 hess = k2 * outer_product(normal, normal);
+
+                            // Friction
+                            {
+                                Float3 x_0          = sa_x_step_start->read(vid);
+                                Float3 rel_dx       = x_k - x_0;
+                                Float  friction_mu  = sa_contact_active_verts_friction_coeff->read(vid);
+                                Float  friction_eps = Friction::ando_barrier::friction_eps;
+                                // auto   lambda_P     = Friction::ando_barrier::get_friction_lambda_P(
+                                //     k1 * normal, dv, normal, friction_mu, friction_eps);
+                                // auto friction_grad_hess =
+                                //     Friction::ando_barrier::compute_gradient_hessian(lambda_P, dv);
+                                auto lambda_mu = -k1 * friction_mu;
+                                auto friction_grad_hess = Friction::ipc_barrier::compute_friction_gradient_hessian(
+                                    lambda_mu, normal, rel_dx, friction_eps);
+                                grad += friction_grad_hess.first;
+                                hess += friction_grad_hess.second;
+                            }
 
                             const Uint   body_idx = abd_perVert_body_id->read(vid);
                             const Float4 weight   = make_float4(1.0f, sa_scaled_model_x->read(vid));
@@ -1389,12 +1428,12 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
                             for (uint ii = 0; ii < 4; ii++)
                             {
                                 Float  wi          = weight[ii];
-                                Float3 affine_grad = wi * gradient;
+                                Float3 affine_grad = wi * grad;
                                 atomic_buffer_add(abd_gradients, 4 * body_idx + ii, affine_grad);
                                 for (uint jj = 0; jj < 4; jj++)
                                 {
                                     Float    wj          = weight[jj];
-                                    Float3x3 affine_hess = wi * wj * hessian;
+                                    Float3x3 affine_hess = wi * wj * hess;
                                     if (ii == jj)
                                     {
                                         atomic_buffer_add(abd_hessians, 16 * body_idx + ii, affine_hess);
@@ -1803,13 +1842,15 @@ void NewtonSolver::host_evaluate_ground_collision()
         [sa_cgB                         = host_sim_data->sa_cgB.data(),
          sa_cgA_diag                    = host_sim_data->sa_cgA_diag.data(),
          sa_x                           = host_sim_data->sa_x.data(),
+         sa_x_step_start                = host_sim_data->sa_x_step_start.data(),
          sa_contact_active_verts_offset = host_sim_data->sa_contact_active_verts_offset.data(),
          sa_contact_active_verts_d_hat  = host_sim_data->sa_contact_active_verts_d_hat.data(),
-         sa_is_fixed                    = host_mesh_data->sa_is_fixed.data(),
-         sa_rest_vert_area              = host_mesh_data->sa_rest_vert_area.data(),
-         stiffness_ground               = stiffness_ground,
-         collision_type                 = get_scene_params().contact_energy_type,
-         floor_y                        = get_scene_params().floor.y](const uint vid)
+         sa_contact_active_verts_friction_coeff = host_sim_data->sa_contact_active_verts_friction_coeff.data(),
+         sa_is_fixed       = host_mesh_data->sa_is_fixed.data(),
+         sa_rest_vert_area = host_mesh_data->sa_rest_vert_area.data(),
+         stiffness_ground  = stiffness_ground,
+         collision_type    = get_scene_params().contact_energy_type,
+         floor_y           = get_scene_params().floor.y](const uint vid)
         {
             if (sa_is_fixed[vid])
                 return;
@@ -1848,10 +1889,26 @@ void NewtonSolver::host_evaluate_ground_collision()
                                     k1,
                                     k2);
                     }
-                    float3   grad    = k1 * normal;
-                    float3x3 hessian = k2 * outer_product(normal, normal);
+                    float3   gradient = k1 * normal;
+                    float3x3 hessian  = k2 * outer_product(normal, normal);
 
-                    sa_cgB[vid]      = sa_cgB[vid] - grad;
+                    // Friction
+                    {
+                        float3 x_0          = sa_x_step_start[vid];
+                        float3 dv           = x_k - x_0;
+                        float  friction_mu  = sa_contact_active_verts_friction_coeff[vid];
+                        float  friction_eps = Friction::ando_barrier::friction_eps;
+                        // auto   lambda_P     = Friction::ando_barrier::get_friction_lambda_P(
+                        //     k1 * normal, dv, normal, friction_mu, friction_eps);
+                        // auto friction_grad_hess = Friction::ando_barrier::compute_gradient_hessian(lambda_P, dv);
+                        auto lambda_mu = -k1 * friction_mu;
+                        auto friction_grad_hess =
+                            Friction::ipc_barrier::compute_friction_gradient_hessian(lambda_mu, normal, dv, friction_eps);
+                        gradient += friction_grad_hess.first;
+                        hessian = hessian + friction_grad_hess.second;
+                    }
+
+                    sa_cgB[vid]      = sa_cgB[vid] - gradient;
                     sa_cgA_diag[vid] = sa_cgA_diag[vid] + hessian;
                 }
             }
@@ -1903,6 +1960,23 @@ void NewtonSolver::host_evaluate_ground_collision()
 
                         float3   gradient = k1 * normal;
                         float3x3 hessian  = k2 * outer_product(normal, normal);
+
+                        // Friction
+                        {
+                            float3 x_0    = host_sim_data->sa_x_step_start[vid];
+                            float3 rel_dx = x_k - x_0;
+                            float friction_mu = host_sim_data->sa_contact_active_verts_friction_coeff[vid];
+                            float friction_eps = Friction::ando_barrier::friction_eps;
+                            // auto  lambda_P     = Friction::ando_barrier::get_friction_lambda_P(
+                            //     k1 * normal, dv, normal, friction_mu, friction_eps);
+                            // auto friction_grad_hess =
+                            //     Friction::ando_barrier::compute_gradient_hessian(lambda_P, dv);
+                            auto lambda_mu = -k1 * friction_mu;
+                            auto friction_grad_hess = Friction::ipc_barrier::compute_friction_gradient_hessian(
+                                lambda_mu, normal, rel_dx, friction_eps);
+                            gradient += friction_grad_hess.first;
+                            hessian = hessian + friction_grad_hess.second;
+                        }
 
                         uint   idx     = 4;
                         float3 model_x = host_mesh_data->sa_scaled_model_x[vid];
@@ -2783,6 +2857,9 @@ void NewtonSolver::host_test_dynamics(luisa::compute::Stream& stream)
         narrow_phase_detector->device_perPair_evaluate_gradient_hessian(stream,
                                                                         sim_data->sa_x,
                                                                         sim_data->sa_x,
+                                                                        sim_data->sa_x_step_start,
+                                                                        sim_data->sa_x_step_start,
+                                                                        sim_data->sa_contact_active_verts_friction_coeff,
                                                                         sim_data->sa_contact_active_verts_d_hat,
                                                                         sim_data->sa_contact_active_verts_offset,
                                                                         sim_data->sa_vert_affine_bodies_id,
@@ -2852,7 +2929,8 @@ void NewtonSolver::host_evaluete_stretch_spring()
                                sa_rest_length = host_sim_data->sa_stretch_spring_rest_state_length.data(),
                                output_gradient_ptr = host_sim_data->sa_stretch_springs_gradients.data(),
                                output_hessian_ptr  = host_sim_data->sa_stretch_springs_hessians.data(),
-                               stiffness_stretch   = get_scene_params().stiffness_spring](const uint eid)
+                               sa_stretch_spring_stiffness =
+                                   host_sim_data->sa_stretch_spring_stiffness.data()](const uint eid)
                               {
                                   uint2 edge = sa_edges[eid];
 
@@ -2860,8 +2938,8 @@ void NewtonSolver::host_evaluete_stretch_spring()
                                   float3   gradients[2] = {Zero3, Zero3};
                                   float3x3 He           = luisa::make_float3x3(0.0f);
 
-                                  const float L                        = sa_rest_length[eid];
-                                  const float stiffness_stretch_spring = stiffness_stretch;
+                                  const float L = sa_rest_length[eid];
+                                  const float stiffness_stretch_spring = sa_stretch_spring_stiffness[eid];
 
                                   float3 diff = vert_pos[0] - vert_pos[1];
                                   float  l    = max_scalar(length_vec(diff), Epsilon);
@@ -3105,7 +3183,7 @@ void NewtonSolver::host_material_energy_assembly()
         };
 
 
-        if (host_sim_data->sa_stretch_springs.size() != 0 && false)
+        if (host_sim_data->sa_stretch_springs.size() != 0)
             CpuParallel::parallel_for(
                 0,
                 host_sim_data->num_verts_soft,
@@ -3382,6 +3460,7 @@ void NewtonSolver::device_compute_contact_energy(luisa::compute::Stream& stream,
     narrow_phase_detector->compute_contact_energy_from_iter_start_list(stream,
                                                                        sim_data->sa_x,
                                                                        sim_data->sa_x,
+                                                                       sim_data->sa_x_step_start,
                                                                        mesh_data->sa_rest_x,
                                                                        mesh_data->sa_rest_x,
                                                                        mesh_data->sa_rest_vert_area,
@@ -3389,6 +3468,7 @@ void NewtonSolver::device_compute_contact_energy(luisa::compute::Stream& stream,
                                                                        mesh_data->sa_faces,
                                                                        sim_data->sa_contact_active_verts_d_hat,
                                                                        sim_data->sa_contact_active_verts_offset,
+                                                                       sim_data->sa_contact_active_verts_friction_coeff,
                                                                        kappa);
 
     auto contact_energy = narrow_phase_detector->download_energy(stream);
@@ -3418,9 +3498,12 @@ void NewtonSolver::device_SpMV(luisa::compute::Stream&               stream,
 
     const auto& host_count      = host_collision_data->narrow_phase_collision_count;
     const uint  reduced_triplet = host_count[CollisionPair::CollisionCount::total_adj_verts_offset()];
-    const uint  aligned_diaptch_count = get_dispatch_threads(reduced_triplet, 256);
-    stream << fn_pcg_spmv_offdiag_block_rbk(collision_data->sa_cgA_contact_offdiag_triplet, input_ptr, output_ptr)
-                  .dispatch(aligned_diaptch_count);
+    if (reduced_triplet != 0)
+    {
+        const uint aligned_diaptch_count = get_dispatch_threads(reduced_triplet, 256);
+        stream << fn_pcg_spmv_offdiag_block_rbk(collision_data->sa_cgA_contact_offdiag_triplet, input_ptr, output_ptr)
+                      .dispatch(aligned_diaptch_count);
+    }
 
     // narrow_phase_detector->device_perVert_spmv(stream, input_ptr, output_ptr);
     // narrow_phase_detector->device_perPair_spmv(stream, input_ptr, output_ptr);
@@ -3866,7 +3949,8 @@ void NewtonSolver::line_search(luisa::compute::Device& device,
             {
                 if (host_mesh_data->sa_is_fixed[vid])
                 {
-                    float3 delta = host_sim_data->sa_x[vid] - host_sim_data->sa_x_tilde[vid];
+                    // float3 delta = host_sim_data->sa_x[vid] - host_sim_data->sa_x_tilde[vid];
+                    float3 delta = host_sim_data->sa_x[vid] - host_sim_data->sa_x_iter_start[vid];
                     return luisa::length(delta);
                 }
                 return 0.0f;  // Non-fixed point
@@ -3912,6 +3996,9 @@ void NewtonSolver::physics_step_CPU(luisa::compute::Device& device, luisa::compu
         narrow_phase_detector->device_perPair_evaluate_gradient_hessian(stream,
                                                                         sim_data->sa_x,
                                                                         sim_data->sa_x,
+                                                                        sim_data->sa_x_step_start,
+                                                                        sim_data->sa_x_step_start,
+                                                                        sim_data->sa_contact_active_verts_friction_coeff,
                                                                         sim_data->sa_contact_active_verts_d_hat,
                                                                         sim_data->sa_contact_active_verts_offset,
                                                                         sim_data->sa_vert_affine_bodies_id,
@@ -4041,6 +4128,9 @@ void NewtonSolver::physics_step_CPU(luisa::compute::Device& device, luisa::compu
             // CpuParallel::parallel_copy(host_sim_data->sa_x, host_sim_data->sa_x_iter_start);  // x_prev = x
             // CpuParallel::parallel_copy(host_sim_data->sa_affine_bodies_q,
             //                            host_sim_data->sa_affine_bodies_q_iter_start);  // q_prev = q
+
+            if (iter == 99)
+                LUISA_ERROR("Solver is not converged in 100 iters");
         }
         host_update_velocity();
     }
@@ -4107,6 +4197,9 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
         narrow_phase_detector->device_perPair_evaluate_gradient_hessian(stream,
                                                                         sim_data->sa_x,
                                                                         sim_data->sa_x,
+                                                                        sim_data->sa_x_step_start,
+                                                                        sim_data->sa_x_step_start,
+                                                                        sim_data->sa_contact_active_verts_friction_coeff,
                                                                         sim_data->sa_contact_active_verts_d_hat,
                                                                         sim_data->sa_contact_active_verts_offset,
                                                                         sim_data->sa_vert_affine_bodies_id,
@@ -4226,8 +4319,7 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
 
                 if (host_sim_data->sa_stretch_springs.size() != 0)
                 {
-                    stream << fn_evaluate_spring(get_scene_params().stiffness_spring)
-                                  .dispatch(host_sim_data->sa_stretch_springs.size());
+                    stream << fn_evaluate_spring().dispatch(host_sim_data->sa_stretch_springs.size());
                     stream << fn_material_energy_assembly_stretch_spring().dispatch(host_sim_data->num_verts_soft);
                 }
 
@@ -4281,6 +4373,9 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
             ADD_HOST_TIME_STAMP("End");
 
             narrow_phase_detector->resize_buffers(device, stream);  // Pre-allocatation
+
+            if (iter == 99)
+                LUISA_ERROR("Solver is not converged in 100 iters");
         }
 
         if (host_sim_data->num_verts_soft != 0)

@@ -76,36 +76,13 @@ class SolverInterface
     void compile_compute_energy(AsyncCompiler& compiler);
 
   public:
-    template <typename T>
-    void get_simulation_results_to_host(std::vector<std::vector<T>>& output_positions)
-    {
-        for (uint meshIdx = 0; meshIdx < host_mesh_data->num_meshes; meshIdx++)
-        {
-            CpuParallel::parallel_for(
-                0,
-                host_mesh_data->prefix_num_verts[meshIdx + 1] - host_mesh_data->prefix_num_verts[meshIdx],
-                [&](const uint vid)
-                {
-                    auto pos = host_mesh_data->sa_x_frame_outer[vid + host_mesh_data->prefix_num_verts[meshIdx]];
-                    output_positions[meshIdx][vid] = {pos.x, pos.y, pos.z};
-                });
-        }
-    }
-    template <typename T>
-    void update_pinned_verts_information(const uint meshIdx, const std::vector<T>& pinned_verts_target_position)
-    {
-        const uint prefix = host_mesh_data->prefix_num_verts[meshIdx];
-        CpuParallel::parallel_for(0,
-                                  pinned_verts_target_position.size(),
-                                  [&](const uint index)
-                                  {
-                                      const auto target = pinned_verts_target_position[index];
-                                      const uint vid = host_mesh_data->fixed_verts_map[meshIdx][index];
-                                      // LUISA_INFO("Fixed id {} : vid = {}, try to move to {}", index, vid, target);
-                                      host_sim_data->sa_target_positions[vid] =
-                                          luisa::make_float3(target[0], target[1], target[2]);
-                                  });
-    }
+    void get_simulation_results_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
+    void update_pinned_verts_position(const uint                  meshIdx,
+                                      const uint                  local_vid,
+                                      const std::array<float, 3>& pinned_verts_target_position);
+    void update_pinned_body_state(const uint                  body_id,
+                                  const std::array<float, 3>& translation = {0.0f, 0.0f, 0.0f},
+                                  const std::array<float, 4>& rotation    = {0.0f, 0.0f, 0.0f, 0.0f});
 
   protected:
     void physics_step_prev_operation();
@@ -114,6 +91,9 @@ class SolverInterface
   private:
     SolverData   solver_data;
     SolverHelper solver_helper;
+
+    std::vector<Animation::PerVertexAnimation> per_vertex_animations;
+    std::vector<Animation::PerBodyAnimation>   per_body_animations;
 
   protected:
     MeshData<std::vector>*            host_mesh_data;
@@ -145,38 +125,38 @@ class SolverInterface
   private:
     luisa::compute::Shader<1, luisa::compute::BufferView<float>> fn_reset_float;
     luisa::compute::Shader<1,
+                           Constitutions::SoftInertia<luisa::compute::Buffer>,
                            luisa::compute::BufferView<float3>,  // sa_x
-                           float,                               // substep_dt
-                           float                                // stiffness_dirichlet
+                           float                                // substep_dt
                            >
         fn_calc_energy_inertia;
     luisa::compute::Shader<1,
+                           Constitutions::AbdInertia<luisa::compute::Buffer>,
                            luisa::compute::BufferView<float3>,  // sa_q
-                           float,                               // substep_dt
-                           float                                // stiffness_dirichlet
+                           float                                // substep_dt
                            >
         fn_calc_energy_abd_inertia;
-    // luisa::compute::Shader<1,
-    //     luisa::compute::BufferView<float3>, // sa_x
-    //     float, // substep_dt
-    //     float // stiffness_dirichlet
-    //     > fn_calc_energy_dirichlet;
+
     luisa::compute::Shader<1,
-                           luisa::compute::BufferView<float3>,  // sa_x
-                           float                                // stiffness_spring
+                           Constitutions::StretchSpring<luisa::compute::Buffer>,  // stretch_spring_constitution
+                           luisa::compute::BufferView<float3>,                    // sa_x
+                           float                                                  // stiffness_spring
                            >
         fn_calc_energy_spring;
     luisa::compute::Shader<1,
-                           luisa::compute::BufferView<float3>  // sa_x
+                           Constitutions::StretchFace<luisa::compute::Buffer>,  // stretch_face_constitution
+                           luisa::compute::BufferView<float3>                   // sa_x
                            >
         fn_calc_energy_stretch_face;
     luisa::compute::Shader<1,
-                           luisa::compute::BufferView<float3>  // sa_q
+                           Constitutions::AbdOrthogonality<luisa::compute::Buffer>,  // abd_ortho_constitution
+                           luisa::compute::BufferView<float3>                        // sa_q
                            >
         fn_calc_energy_abd_ortho;
     luisa::compute::Shader<1,
-                           luisa::compute::BufferView<float3>,  // sa_x
-                           float                                // stiffness_bending
+                           Constitutions::BendingEdge<luisa::compute::Buffer>,  // bending_edge_constitution
+                           luisa::compute::BufferView<float3>,                  // sa_x
+                           float                                                // stiffness_bending
                            >
         fn_calc_energy_bending;
     luisa::compute::Shader<1,

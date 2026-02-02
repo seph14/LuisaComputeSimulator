@@ -16,7 +16,6 @@
 #include "SimulationCore/scene_params.h"
 #include "SimulationCore/base_mesh.h"
 #include "SimulationSolver/solver_interface.h"
-#include "SimulationSolver/descent_solver.h"
 
 #include "Initializer/init_mesh_data.h"
 #include "Initializer/init_sim_data.h"
@@ -33,17 +32,6 @@
 template <typename T>
 using Buffer = luisa::compute::Buffer<T>;
 
-static uint energy_idx = 0;
-
-
-enum SolverType
-{
-    SolverTypeGaussNewton,
-    SolverTypeXPBD_CPU,
-    SolverTypeVBD_CPU,
-    SolverTypeVBD_async,
-};
-
 int main(int argc, char** argv)
 {
 
@@ -59,6 +47,8 @@ int main(int argc, char** argv)
     // Init GPU system
 #if defined(__APPLE__)
     std::string backend = "metal";
+#elif defined(_WIN32)
+    std::string backend = "cuda";
 #else
     std::string backend = "cuda";
 #endif
@@ -72,7 +62,7 @@ int main(int argc, char** argv)
     luisa::vector<luisa::string> device_names = context.backend_device_names(backend);
     if (device_names.empty())
     {
-        LUISA_WARNING("No haredware device found.");
+        LUISA_WARNING("No hardware device found.");
         exit(1);
     }
     for (size_t i = 0; i < device_names.size(); ++i)
@@ -117,8 +107,14 @@ int main(int argc, char** argv)
         for (uint mesh_idx = 0; mesh_idx < world_data.size(); mesh_idx++)
         {
             const float curr_time = curr_frame * lcs::get_scene_params().implicit_dt;
-            solver.update_pinned_verts_information(
-                mesh_idx, world_data[mesh_idx].get_fixed_point_target_positions(curr_time));
+            std::vector<lcs::Animation::PerVertexAnimation> per_vertex_animations;
+            std::vector<lcs::Animation::PerBodyAnimation>   per_body_animations;
+            world_data[mesh_idx].get_vertex_animations(curr_time, per_vertex_animations);
+            for (const auto& animate : per_vertex_animations)
+            {
+                solver.update_pinned_verts_position(mesh_idx, animate.vertex_id, animate.translation);
+            }
+            // solver.update_pinned_body_state(mesh_idx);  // TODO: Fixed only
         }
     };
 
@@ -405,7 +401,7 @@ int main(int argc, char** argv)
                             device_collision_data.broad_phase_list_vf.size() / 2,
                             device_collision_data.broad_phase_list_ee.size() / 2,
                             device_collision_data.narrow_phase_list.size(),
-                            device_collision_data.sa_cgA_contact_offdiag_triplet.size());
+                            device_collision_data.triplet_data.sa_cgA_contact_offdiag_triplet.size());
             }
 
             if (ImGui::CollapsingHeader("Data IO", ImGuiTreeNodeFlags_DefaultOpen))

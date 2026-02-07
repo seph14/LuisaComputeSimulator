@@ -17,6 +17,7 @@
 #include "SimulationCore/scene_params.h"
 #include "Utils/cpu_parallel.h"
 #include "Utils/reduce_helper.h"
+#include "Utils/buffer_adder.h"
 #include "luisa/backends/ext/pinned_memory_ext.hpp"
 #include "luisa/core/logging.h"
 #include "luisa/core/mathematics.h"
@@ -44,100 +45,7 @@
 namespace lcs
 {
 
-template <typename T>
-static void buffer_copy(const std::vector<T>& src, std::vector<T>& dst)
-{
-    if (src.size() != dst.size())
-    {
-        LUISA_ERROR("Buffer size mismatch {} != {}", src.size(), dst.size());
-    }
-    std::memcpy(dst.data(), src.data(), sizeof(T) * src.size());
-    // CpuParallel::parallel_copy(src, dst);
-}
-template <typename T>
-static void buffer_copy(luisa::compute::Stream&          stream,
-                        const luisa::compute::Buffer<T>& src,
-                        luisa::compute::Buffer<T>&       dst)
-{
-    stream << src.copy_to(dst);
-}
-template <typename T>
-static void buffer_upload(luisa::compute::Stream& stream, const std::vector<T>& src, luisa::compute::Buffer<T>& dst)
-{
-    stream << dst.copy_from(src.data());
-}
-
-template <typename T>
-static void buffer_download(luisa::compute::Stream&          stream,
-                            const luisa::compute::Buffer<T>& src,
-                            std::vector<T>&                  dst,
-                            const bool                       wait = false)
-{
-    stream << src.copy_to(dst.data());
-    if (wait)
-        stream << luisa::compute::synchronize();
-}
-// template <typename T>
-// [[nodiscard]] static auto buffer_download(const luisa::compute::Buffer<T>& src, std::vector<T>& dst, const bool wait = false)
-// {
-//     if (wait)
-//         return src.copy_to(dst.data()) << luisa::compute::synchronize();
-//     else
-//         return src.copy_to(dst.data());
-// }
-
-template <typename T>
-static void buffer_add(const luisa::compute::BufferView<T>& buffer, const Var<uint> dest, const Var<T>& value)
-{
-    buffer->write(dest, buffer->read(dest) + value);
-}
-template <typename T>
-static void buffer_add(const luisa::compute::BufferVar<T>& buffer, const Var<uint> dest, const Var<T>& value)
-{
-    buffer->write(dest, buffer->read(dest) + value);
-}
-
-template <typename T>
-static void buffer_add(std::vector<T>& buffer, const uint dest, const T& value)
-{
-    buffer[dest] = buffer[dest] + value;
-}
-template <typename T>
-static void buffer_add(const std::span<T>& buffer, const uint dest, const T& value)
-{
-    buffer[dest] = buffer[dest] + value;
-}
-template <typename T>
-static void atomic_buffer_add(const std::vector<T>& buffer, const uint dest, const T& value)
-{
-    CpuParallel::spin_atomic<T>::fetch_add(buffer[dest], value);
-}
-template <typename T>
-static void atomic_buffer_add(const std::span<T>& buffer, const uint dest, const T& value)
-{
-    CpuParallel::spin_atomic<T>::fetch_add(buffer[dest], value);
-}
-
-static void atomic_buffer_add(const luisa::compute::BufferVar<float3>& buffer, const Var<uint> dest, const Var<float3>& value)
-{
-    buffer->atomic(dest)[0].fetch_add(value[0]);
-    buffer->atomic(dest)[1].fetch_add(value[1]);
-    buffer->atomic(dest)[2].fetch_add(value[2]);
-}
-static void atomic_buffer_add(const luisa::compute::BufferVar<float3x3>& buffer,
-                              const Var<uint>                            dest,
-                              const Var<float3x3>&                       value)
-{
-    buffer->atomic(dest)[0][0].fetch_add(value[0][0]);
-    buffer->atomic(dest)[0][1].fetch_add(value[0][1]);
-    buffer->atomic(dest)[0][2].fetch_add(value[0][2]);
-    buffer->atomic(dest)[1][0].fetch_add(value[1][0]);
-    buffer->atomic(dest)[1][1].fetch_add(value[1][1]);
-    buffer->atomic(dest)[1][2].fetch_add(value[1][2]);
-    buffer->atomic(dest)[2][0].fetch_add(value[2][0]);
-    buffer->atomic(dest)[2][1].fetch_add(value[2][1]);
-    buffer->atomic(dest)[2][2].fetch_add(value[2][2]);
-}
+using namespace BufferOp;
 
 static inline float fast_infinity_norm(const std::vector<float3>& ptr)  // Min value in array
 {
@@ -268,6 +176,12 @@ void NewtonSolver::compile(AsyncCompiler& compiler)
 
     compile_evaluate(compiler, default_option);
 
+    compiler.compile<1>(fn_reset_float,
+                        [](Var<BufferView<float>> buffer, Float val)
+                        {
+                            const UInt vid = dispatch_id().x;
+                            buffer->write(vid, val);
+                        });
 
     compiler.compile<1>(fn_reset_vector,
                         [](Var<BufferView<float3>> buffer)
@@ -756,273 +670,8 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
 {
     using namespace luisa::compute;
 
-    compiler.compile<1>(
-        fn_evaluate_soft_inertia,
-        [sa_x        = sim_data->sa_q.view(),
-         sa_x_tilde  = sim_data->sa_q_tilde.view(),
-         sa_is_fixed = sim_data->sa_q_is_fixed.view()](
-            Var<Constitutions::SoftInertia<luisa::compute::Buffer>> contraint, const Float substep_dt)
-        {
-            auto& sa_vert_mass           = contraint.sa_soft_vert_mass;
-            auto& sa_stiffness_dirichlet = contraint.sa_stiffness_dirichlet;
-            auto& output_gradient        = contraint.constraint_gradients;
-            auto& output_hessian         = contraint.constraint_hessians;
-
-            const UInt  vid     = dispatch_id().x;
-            const Float h       = substep_dt;
-            const Float h_2_inv = 1.0f / (h * h);
-
-            Float3 x_k     = sa_x->read(vid);
-            Float3 x_tilde = sa_x_tilde->read(vid);
-            Float  mass    = sa_vert_mass->read(vid);
-
-            Float3   gradient = mass * h_2_inv * (x_k - x_tilde);
-            Float3x3 hessian  = make_float3x3(1.0f) * mass * h_2_inv;
-
-            // $if(sa_is_fixed->read(vid) != 0)
-            {
-                const Float stiffness_dirichlet = sa_stiffness_dirichlet->read(vid);
-
-                gradient = stiffness_dirichlet * gradient;
-                hessian  = stiffness_dirichlet * hessian;
-                // hessian = make_float3x3(1.0f) * 1e9f;
-                // gradient = make_float3(0.0f);
-            };
-
-            output_gradient->write(vid, gradient);
-            output_hessian->write(vid, hessian);
-        },
-        default_option);
-
-    compiler.compile<1>(
-        fn_evaluate_abd_inertia,
-        [abd_q         = sim_data->sa_q.view(),
-         abd_q_tilde   = sim_data->sa_q_tilde.view(),
-         sa_q_is_fixed = sim_data->sa_q_is_fixed.view()](
-            Var<Constitutions::AbdInertia<luisa::compute::Buffer>> constraint, const Float substep_dt)
-        {
-            auto& abd_indices                  = constraint.constraint_indices;
-            auto& abd_gradients                = constraint.constraint_gradients;
-            auto& abd_hessians                 = constraint.constraint_hessians;
-            auto& sa_affine_bodies_mass_matrix = constraint.sa_affine_bodies_mass_matrix;
-            auto& sa_stiffness_dirichlet       = constraint.sa_stiffness_dirichlet;
-
-            const UInt  body_idx = dispatch_id().x;
-            const Float h        = substep_dt;
-            const Float h_2_inv  = 1.0f / (h * h);
-
-            const Uint4 indices = abd_indices->read(body_idx);
-
-            Float3 delta_q[4] = {abd_q->read(indices[0]) - abd_q_tilde->read(indices[0]),
-                                 abd_q->read(indices[1]) - abd_q_tilde->read(indices[1]),
-                                 abd_q->read(indices[2]) - abd_q_tilde->read(indices[2]),
-                                 abd_q->read(indices[3]) - abd_q_tilde->read(indices[3])};
-
-            Float4x4 mass_matrix = sa_affine_bodies_mass_matrix->read(body_idx);
-            Float3   gradient[4] = {Zero3, Zero3, Zero3, Zero3};
-
-            for (uint ii = 0; ii < 4; ii++)
-            {
-                for (uint jj = 0; jj < 4; jj++)
-                {
-                    gradient[ii] += mass_matrix[ii][jj] * delta_q[jj];
-                }
-            }
-
-            Float alpha = 1.0f;
-            // $if(sa_q_is_fixed->read(indices[0]) != 0)
-            {
-                const Float stiffness_dirichlet = sa_stiffness_dirichlet->read(body_idx);
-
-                // alpha = (1.0f + stiffness_dirichlet);
-                alpha = stiffness_dirichlet;
-            };
-
-            abd_gradients->write(4 * body_idx + 0, alpha * h_2_inv * gradient[0]);
-            abd_gradients->write(4 * body_idx + 1, alpha * h_2_inv * gradient[1]);
-            abd_gradients->write(4 * body_idx + 2, alpha * h_2_inv * gradient[2]);
-            abd_gradients->write(4 * body_idx + 3, alpha * h_2_inv * gradient[3]);
-
-            // Float3 max_grad     = max(max(gradient[0], gradient[1]), max(gradient[2], gradient[3]));
-            // Float  max_grad_val = alpha * h_2_inv * max(max_grad.x, max(max_grad.y, max_grad.z));
-            // device_log("Body {}, max force = {}", body_idx, -max_grad_val);
-
-            abd_hessians->write(16 * body_idx + 0, make_eye3x3(alpha * h_2_inv * mass_matrix[0][0]));
-            abd_hessians->write(16 * body_idx + 1, make_eye3x3(alpha * h_2_inv * mass_matrix[1][1]));
-            abd_hessians->write(16 * body_idx + 2, make_eye3x3(alpha * h_2_inv * mass_matrix[2][2]));
-            abd_hessians->write(16 * body_idx + 3, make_eye3x3(alpha * h_2_inv * mass_matrix[3][3]));
-
-            uint idx = 4;
-            for (uint ii = 0; ii < 4; ii++)
-            {
-                for (uint jj = 0; jj < 4; jj++)
-                {
-                    if (ii != jj)
-                    {
-                        abd_hessians->write(16 * body_idx + idx,
-                                            make_eye3x3(alpha * h_2_inv * mass_matrix[ii][jj]));
-                        idx += 1;
-                    }
-                }
-            }
-        },
-        default_option);
-
-    auto calculate_per_vert_grad_hess_template =
-        [sa_x                           = sim_data->sa_x.view(),
-         sa_x_step_start                = sim_data->sa_x_step_start.view(),
-         sa_rest_vert_area              = mesh_data->sa_rest_vert_area.view(),
-         sa_is_fixed                    = mesh_data->sa_is_fixed.view(),
-         sa_contact_active_verts_offset = sim_data->sa_contact_active_verts_offset.view(),
-         sa_contact_active_verts_d_hat  = sim_data->sa_contact_active_verts_d_hat.view(),
-         sa_contact_active_verts_friction_coeff =
-             sim_data->sa_contact_active_verts_friction_coeff.view()](const Uint  vid,
-                                                                      Float3&     out_gradient,
-                                                                      Float3x3&   out_hessian,
-                                                                      const Float floor_y,
-                                                                      const Bool  use_ground_collision,
-                                                                      const Float stiffness,
-                                                                      const Uint  collision_type)
-    {
-        Bool collide = false;
-        $if(!sa_is_fixed->read(vid) & use_ground_collision)
-        {
-            Float3 x_k = sa_x->read(vid);
-            Float3 x_0 = sa_x_step_start->read(vid);
-
-            Float d_hat     = sa_contact_active_verts_d_hat->read(vid);
-            Float thickness = sa_contact_active_verts_offset->read(vid);
-
-            float3 normal = luisa::make_float3(0, 1, 0);
-            Float  area   = sa_rest_vert_area->read(vid);
-            Float  stiff  = stiffness * area;
-
-            // Repulsion
-            Float curr_dist = x_k.y - floor_y;
-            $if(curr_dist - thickness < d_hat)
-            {
-                Float k1;
-                Float k2;
-                $if(collision_type == 0)
-                {
-                    k1 = stiff * (curr_dist - thickness - d_hat);
-                    k2 = stiff;
-                }
-                $else
-                {
-                    k1 = stiff * ipc::barrier_first_derivative(curr_dist - thickness, d_hat);
-                    k2 = stiff * ipc::barrier_second_derivative(curr_dist - thickness, d_hat);
-                };
-
-                out_gradient = k1 * normal;
-                out_hessian  = k2 * outer_product(normal, normal);
-                collide      = true;
-            };
-
-            // Friction
-            Float init_dist = x_0.y - floor_y;
-            $if(init_dist - thickness < d_hat)
-            {
-                Float k1;
-                $if(collision_type == 0)
-                {
-                    k1 = stiff * (init_dist - thickness - d_hat);
-                }
-                $else
-                {
-                    k1 = stiff * ipc::barrier_first_derivative(init_dist - thickness, d_hat);
-                };
-
-                Float3 rel_dx       = x_k - x_0;
-                Float  friction_mu  = sa_contact_active_verts_friction_coeff->read(vid);
-                Float  friction_eps = Friction::ando_barrier::friction_eps;
-                auto   lambda_mu    = -k1 * friction_mu;
-                auto   friction_grad_hess =
-                    Friction::ipc_barrier::compute_friction_gradient_hessian(lambda_mu, normal, rel_dx, friction_eps);
-                out_gradient += friction_grad_hess.first;
-                out_hessian += friction_grad_hess.second;
-                collide = true;
-            };
-        };
-        return collide;
-    };
-
-    compiler.compile<1>(
-        fn_evaluate_soft_ground_collision,
-        [calculate_per_vert_grad_hess_template](Var<Constitutions::SoftInertia<luisa::compute::Buffer>> contraint,
-                                                Float floor_y,
-                                                Bool  use_ground_collision,
-                                                Float stiffness,
-                                                Uint  collision_type)
-        {
-            auto& output_gradient = contraint.constraint_gradients;
-            auto& output_hessian  = contraint.constraint_hessians;
-
-            const UInt vid = dispatch_id().x;
-
-            Float3   grad    = make_float3(0.0f);
-            Float3x3 hess    = make_float3x3(0.0f);
-            Bool     collide = calculate_per_vert_grad_hess_template(
-                vid, grad, hess, floor_y, use_ground_collision, stiffness, collision_type);
-
-            $if(collide)
-            {
-                buffer_add(output_gradient, vid, grad);
-                buffer_add(output_hessian, vid, hess);
-            };
-        },
-        default_option);
-
-    compiler.compile<1>(
-        fn_evaluate_abd_ground_collision,
-        [sa_scaled_model_x = mesh_data->sa_scaled_model_x.view(),
-         sa_x_to_dof_map   = sim_data->sa_x_to_dof_map.view(),
-         calculate_per_vert_grad_hess_template](Var<Constitutions::AbdInertia<luisa::compute::Buffer>> constraint,
-                                                Float floor_y,
-                                                Bool  use_ground_collision,
-                                                Float stiffness,
-                                                Uint  vid_start,
-                                                Uint  collision_type)
-        {
-            auto& abd_gradients = constraint.constraint_gradients;
-            auto& abd_hessians  = constraint.constraint_hessians;
-
-            const UInt vid = vid_start + dispatch_id().x;
-
-            Float3   grad    = make_float3(0.0f);
-            Float3x3 hess    = make_float3x3(0.0f);
-            Bool     collide = calculate_per_vert_grad_hess_template(
-                vid, grad, hess, floor_y, use_ground_collision, stiffness, collision_type);
-
-            const Uint dof_info = sa_x_to_dof_map->read(vid);
-            const Uint dof_idx  = dof_info & Attributions::RIGID_BODY_MASK;
-            const Uint body_idx = (dof_idx - vid_start) / 4;
-
-            const Float4 weight = make_float4(1.0f, sa_scaled_model_x->read(vid));
-
-            uint idx = 4;
-            for (uint ii = 0; ii < 4; ii++)
-            {
-                Float  wi          = weight[ii];
-                Float3 affine_grad = wi * grad;
-                atomic_buffer_add(abd_gradients, 4 * body_idx + ii, affine_grad);
-                for (uint jj = 0; jj < 4; jj++)
-                {
-                    Float    wj          = weight[jj];
-                    Float3x3 affine_hess = wi * wj * hess;
-                    if (ii == jj)
-                    {
-                        atomic_buffer_add(abd_hessians, 16 * body_idx + ii, affine_hess);
-                    }
-                    else
-                    {
-                        atomic_buffer_add(abd_hessians, 16 * body_idx + idx, affine_hess);
-                        idx += 1;
-                    }
-                }
-            }
-        },
-        default_option);
+    // Only register helpers that are not per-energy; per-energy evaluate shaders are registered
+    // inside each energy's compile() implementation.
 
     compiler.compile<1>(
         fn_gound_collision_ccd,
@@ -1047,20 +696,6 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
                         Float init_y  = sa_x_iter_start->read(vid).y;
                         Float curr_dy = curr_y - init_y;  // abs
                         toi = (init_y - offset - floor_y) / (init_y - curr_y) / accd::line_search_max_t;
-                        // Float target_y = init_y + toi * curr_dy;
-                        // $if(alpha < 0.0f | alpha > 1.0f | target_y - offset < floor_y){};
-                        // $if(vid == 22)
-                        // {
-                        //     device_log("Vert {} penetrate in toi {} (From {} to {}, thickness = {} (After apply = {})",
-                        //                vid,
-                        //                alpha,
-                        //                init_y,
-                        //                curr_y,
-                        //                offset,
-                        //                init_y + alpha * curr_dy);
-                        // };
-                        // device_log("Vert {}'s toi = {} (After apply = {})", vid, alpha, init_y + alpha * curr_dy);
-                        // toi_per_vert->atomic(0).fetch_min(alpha);
                     };
                 };
             };
@@ -1071,261 +706,6 @@ void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::comput
             {
                 toi_per_vert->atomic(0).fetch_min(toi);
             };
-        },
-        default_option);
-
-    // if (host_sim_data->sa_stretch_springs.size() != 0)
-    compiler.compile<1>(
-        fn_evaluate_spring,
-        [sa_x = sim_data->sa_x.view()](Var<Constitutions::StretchSpring<luisa::compute::Buffer>> constraint)
-        {
-            auto& sa_edges                    = constraint.constraint_indices;
-            auto& sa_rest_length              = constraint.sa_stretch_spring_rest_state_length;
-            auto& sa_stretch_spring_stiffness = constraint.sa_stretch_spring_stiffness;
-            auto& output_gradient_ptr         = constraint.constraint_gradients;
-            auto& output_hessian_ptr          = constraint.constraint_hessians;
-
-
-            const UInt eid  = dispatch_id().x;
-            UInt2      edge = sa_edges->read(eid);
-
-            Float3   vert_pos[2]  = {sa_x->read(edge.x), sa_x->read(edge.y)};
-            Float3   gradients[2] = {make_float3(0.0f), make_float3(0.0f)};
-            Float3x3 He           = make_float3x3(0.0f);
-
-            const Float L                = sa_rest_length->read(eid);
-            const Float stiffness_spring = sa_stretch_spring_stiffness->read(eid);
-            // const Float stiffness_spring = stiffness_stretch;
-
-            Float3 diff = vert_pos[0] - vert_pos[1];
-            Float  l    = max(length(diff), Epsilon);
-            Float  l0   = L;
-            Float  C    = l - l0;
-
-            Float3   dir           = diff / l;
-            Float3x3 xxT           = outer_product(diff, diff);
-            Float    x_inv         = 1.f / l;
-            Float    x_squared_inv = x_inv * x_inv;
-
-            gradients[0] = stiffness_spring * dir * C;
-            gradients[1] = -gradients[0];
-            He           = stiffness_spring * x_squared_inv * xxT
-                 + stiffness_spring * max(1.0f - L * x_inv, 0.0f) * (make_float3x3(1.0f) - x_squared_inv * xxT);
-
-            // Output
-            {
-                output_gradient_ptr->write(eid * 2 + 0, gradients[0]);
-                output_gradient_ptr->write(eid * 2 + 1, gradients[1]);
-
-                output_hessian_ptr->write(eid * 4 + 0, He);
-                output_hessian_ptr->write(eid * 4 + 1, He);
-                output_hessian_ptr->write(eid * 4 + 2, -1.0f * He);
-                output_hessian_ptr->write(eid * 4 + 3, -1.0f * He);
-            }
-        },
-        default_option);
-
-    // if (host_sim_data->sa_stretch_faces.size() != 0)
-    compiler.compile<1>(
-        fn_evaluate_stretch_face,
-        [sa_x = sim_data->sa_x.view()](Var<Constitutions::StretchFace<luisa::compute::Buffer>> constraint)
-        {
-            auto& sa_faces                   = constraint.constraint_indices;
-            auto& sa_stretch_faces_Dm_inv    = constraint.sa_stretch_faces_Dm_inv;
-            auto& sa_stretch_faces_rest_area = constraint.sa_stretch_faces_rest_area;
-            auto& sa_stretch_faces_mu_lambda = constraint.sa_stretch_faces_mu_lambda;
-            auto& output_gradient_ptr        = constraint.constraint_gradients;
-            auto& output_hessian_ptr         = constraint.constraint_hessians;
-
-            const UInt  fid  = dispatch_id().x;
-            const UInt3 face = sa_faces->read(fid);
-
-            Float3   vert_pos[3] = {sa_x->read(face[0]), sa_x->read(face[1]), sa_x->read(face[2])};
-            Float3x3 gradients;
-            Float9x9 hessians;
-
-            Float2x2 Dm_inv = sa_stretch_faces_Dm_inv->read(fid);
-            Float    area   = sa_stretch_faces_rest_area->read(fid);
-
-            Float2 mu_lambda    = sa_stretch_faces_mu_lambda->read(fid);
-            Float  mu_cloth     = mu_lambda[0];
-            Float  lambda_cloth = mu_lambda[1];
-
-            StretchEnergy::compute_gradient_hessian(
-                vert_pos[0], vert_pos[1], vert_pos[2], Dm_inv, mu_cloth, lambda_cloth, area, gradients, hessians);
-
-            // Output
-            {
-                output_gradient_ptr->write(fid * 3 + 0, gradients[0]);
-                output_gradient_ptr->write(fid * 3 + 1, gradients[1]);
-                output_gradient_ptr->write(fid * 3 + 2, gradients[2]);
-            }
-            {
-                output_hessian_ptr->write(fid * 9 + 0, hessians->block(0, 0));
-                output_hessian_ptr->write(fid * 9 + 1, hessians->block(1, 1));
-                output_hessian_ptr->write(fid * 9 + 2, hessians->block(2, 2));
-
-                output_hessian_ptr->write(fid * 9 + 3, hessians->block(1, 0));  // lower triangle
-                output_hessian_ptr->write(fid * 9 + 4, hessians->block(2, 0));
-                output_hessian_ptr->write(fid * 9 + 5, hessians->block(0, 1));
-                output_hessian_ptr->write(fid * 9 + 6, hessians->block(2, 1));
-                output_hessian_ptr->write(fid * 9 + 7, hessians->block(0, 2));
-                output_hessian_ptr->write(fid * 9 + 8, hessians->block(1, 2));
-            }
-        },
-        default_option);
-
-    compiler.compile<1>(
-        fn_evaluate_bending,
-        [sa_x = sim_data->sa_x.view()](Var<Constitutions::BendingEdge<luisa::compute::Buffer>> constraint, const Float scaling)
-        {
-            auto& sa_edges                    = constraint.constraint_indices;
-            auto& sa_bending_edges_rest_angle = constraint.sa_bending_edges_rest_angle;
-            auto& sa_bending_edges_rest_area  = constraint.sa_bending_edges_rest_area;
-            auto& sa_bending_edges_stiffness  = constraint.sa_bending_edges_stiffness;
-            auto& output_gradient_ptr         = constraint.constraint_gradients;
-            auto& output_hessian_ptr          = constraint.constraint_hessians;
-
-            const UInt  eid  = dispatch_id().x;
-            const UInt4 edge = sa_edges->read(eid);
-
-            Float3 vert_pos[4] = {
-                sa_x->read(edge[0]),
-                sa_x->read(edge[1]),
-                sa_x->read(edge[2]),
-                sa_x->read(edge[3]),
-            };
-            Float3 gradients[4] = {
-                make_float3(0.0f),
-                make_float3(0.0f),
-                make_float3(0.0f),
-                make_float3(0.0f),
-            };
-
-            // Refers to ppf-contact-solver
-            const Float rest_angle = sa_bending_edges_rest_angle->read(eid);
-            const Float angle =
-                BendingEnergy::compute_d_theta_d_x(vert_pos[0], vert_pos[1], vert_pos[2], vert_pos[3], gradients);
-            const Float delta_angle = angle - rest_angle;
-
-            const Float area  = sa_bending_edges_rest_area->read(eid);
-            const Float stiff = sa_bending_edges_stiffness->read(eid) * scaling * area;
-
-            {
-                output_gradient_ptr->write(eid * 4 + 0, stiff * delta_angle * gradients[0]);
-                output_gradient_ptr->write(eid * 4 + 1, stiff * delta_angle * gradients[1]);
-                output_gradient_ptr->write(eid * 4 + 2, stiff * delta_angle * gradients[2]);
-                output_gradient_ptr->write(eid * 4 + 3, stiff * delta_angle * gradients[3]);
-
-                auto outer = [&](const uint ii, const uint jj) -> Float3x3
-                {
-                    // Use simple Gauss-Newton approximation
-                    return stiff * outer_product(gradients[ii], gradients[jj]);
-                };
-                output_hessian_ptr->write(eid * 16 + 0, outer(0, 0));
-                output_hessian_ptr->write(eid * 16 + 1, outer(1, 1));
-                output_hessian_ptr->write(eid * 16 + 2, outer(2, 2));
-                output_hessian_ptr->write(eid * 16 + 3, outer(3, 3));
-
-                uint idx = 4;
-                for (uint ii = 0; ii < 4; ii++)
-                {
-                    for (uint jj = 0; jj < 4; jj++)
-                    {
-                        if (ii != jj)
-                        {
-                            output_hessian_ptr->write(eid * 16 + idx, outer(ii, jj));
-                            idx += 1;
-                        }
-                    }
-                }
-            }
-        },
-        default_option);
-
-    compiler.compile<1>(
-        fn_evaluate_abd_orthogonality,
-        [abd_q = sim_data->sa_q.view()](Var<Constitutions::AbdOrthogonality<luisa::compute::Buffer>> constraint)
-        {
-            auto& abd_indices   = constraint.constraint_indices;
-            auto& abd_gradients = constraint.constraint_gradients;
-            auto& abd_hessians  = constraint.constraint_hessians;
-            auto& abd_volume    = constraint.abd_volume;
-            auto& abd_kappa     = constraint.abd_kappa;
-
-            const UInt body_idx = dispatch_id().x;
-
-            Float3   ortho_gradient[3] = {Zero3};
-            Float3x3 ortho_hessian[6]  = {Zero3x3};
-
-            const Uint3 indices = abd_indices->read(body_idx);
-
-            Float3x3 A =
-                make_float3x3(abd_q->read(indices[0]), abd_q->read(indices[1]), abd_q->read(indices[2]));
-
-            const Float kappa = abd_kappa->read(body_idx);
-            const Float V     = abd_volume->read(body_idx);
-
-            Float stiff = kappa * V;
-            for (uint ii = 0; ii < 3; ii++)
-            {
-                Float3 grad = (-1.0f) * A[ii];
-                for (uint jj = 0; jj < 3; jj++)
-                {
-                    grad += dot_vec(A[ii], A[jj]) * A[jj];
-                }
-                // cgB.block<3, 1>(3 + 3 * ii, 0) -= 4 * stiff * float3_to_eigen3(grad);
-                ortho_gradient[ii] += 4.0f * stiff * grad;
-            }
-            uint idx = 0;
-            for (uint ii = 0; ii < 3; ii++)
-            {
-                for (uint jj = ii; jj < 3; jj++)
-                {
-                    Float3x3 hessian = Zero3x3;
-                    if (ii == jj)
-                    {
-                        Float3x3 qiqiT = outer_product(A[ii], A[ii]);
-                        Float3x3 qiTqi = (dot_vec(A[ii], A[ii]) - 1.0f) * Identity3x3;
-                        hessian        = qiqiT + qiTqi;
-                        for (uint kk = 0; kk < 3; kk++)
-                        {
-                            hessian = hessian + outer_product(A[kk], A[kk]);
-                        }
-                    }
-                    else
-                    {
-                        hessian = outer_product(A[jj], A[ii]) + dot_vec(A[ii], A[jj]) * Identity3x3;
-                    }
-                    ortho_hessian[idx] = ortho_hessian[idx] + 4.0f * stiff * hessian;
-                    idx += 1;
-                }
-            }
-
-            auto write_to_grad = [&](const uint i)
-            { abd_gradients->write(3 * body_idx + i, ortho_gradient[i]); };
-            auto write_to_hess = [&](const uint i, const uint j, const bool use_transpose)
-            {
-                Float3x3 ortho_hess = use_transpose ? transpose(ortho_hessian[j]) : ortho_hessian[j];
-                abd_hessians->write(9 * body_idx + i, ortho_hess);
-            };
-
-            write_to_grad(0);
-            write_to_grad(1);
-            write_to_grad(2);
-
-            //  0   3   4  ||   0   1   2
-            //  5   1   6  ||  t1   3   4
-            //  7   8   2  ||  t2  t4   5
-            write_to_hess(0, 0, false);
-            write_to_hess(1, 3, false);
-            write_to_hess(2, 5, false);
-            write_to_hess(3, 1, false);
-            write_to_hess(4, 2, false);
-            write_to_hess(5, 1, true);
-            write_to_hess(6, 4, false);
-            write_to_hess(7, 2, true);
-            write_to_hess(8, 4, true);
         },
         default_option);
 }
@@ -1432,376 +812,7 @@ void NewtonSolver::host_reset_cgB_cgX_diagA()
         CpuParallel::parallel_set(host_sim_data->sa_cgX, luisa::make_float3(0.0f));
     }
 }
-void NewtonSolver::host_evaluate_inertia()
-{
-    auto& inertia_data = host_sim_data->get_soft_inertia_data();
-    if (inertia_data.is_valid())
-    {
-        CpuParallel::parallel_for(0,
-                                  host_sim_data->num_verts_soft,
-                                  [sa_x          = std::span(host_sim_data->sa_x),
-                                   sa_x_tilde    = std::span(host_sim_data->sa_q_tilde),
-                                   sa_q_is_fixed = std::span(host_sim_data->sa_q_is_fixed),
-                                   sa_vert_mass  = std::span(inertia_data.sa_soft_vert_mass),
-                                   sa_stiffness_dirichlet = std::span(inertia_data.sa_stiffness_dirichlet),
-                                   output_gradient = std::span(inertia_data.constraint_gradients),
-                                   output_hessian  = std::span(inertia_data.constraint_hessians),
-                                   substep_dt      = get_scene_params().get_substep_dt()](const uint vid)
-                                  {
-                                      const float h       = substep_dt;
-                                      const float h_2_inv = 1.f / (h * h);
 
-                                      float3 x_k     = sa_x[vid];
-                                      float3 x_tilde = sa_x_tilde[vid];
-                                      // float3 v_0 = sa_v[vid];
-
-                                      float    mass     = sa_vert_mass[vid];
-                                      float3   gradient = mass * h_2_inv * (x_k - x_tilde);
-                                      float3x3 hessian  = mass * h_2_inv * luisa::float3x3::eye(1.0f);
-
-
-                                      //   if (sa_q_is_fixed[vid])
-                                      {
-                                          const float stiffness_dirichlet = sa_stiffness_dirichlet[vid];
-                                          gradient = stiffness_dirichlet * gradient;
-                                          hessian  = stiffness_dirichlet * hessian;
-                                      }
-                                      {
-                                          output_gradient[vid] = gradient;
-                                          output_hessian[vid]  = hessian;
-                                      }
-                                  });
-    }
-
-
-    auto& abd_data = host_sim_data->get_abd_inertia_data();
-
-    const uint  prefix      = host_sim_data->num_verts_soft;
-    const auto& abd_q       = host_sim_data->sa_q;
-    const auto& abd_q_tilde = host_sim_data->sa_q_tilde;
-
-    if (abd_data.is_valid())
-    {
-        CpuParallel::parallel_for(
-            0,
-            abd_data.get_num_indices(),
-            [abd_gradients           = std::span(abd_data.constraint_gradients),
-             abd_hessians            = std::span(abd_data.constraint_hessians),
-             abd_indices             = std::span(abd_data.constraint_indices),
-             abd_mass_matrix         = std::span(abd_data.sa_affine_bodies_mass_matrix),
-             abd_stiffness_dirichlet = std::span(abd_data.sa_stiffness_dirichlet),
-             abd_q                   = std::span(host_sim_data->sa_q),
-             sa_q_is_fixed           = std::span(host_sim_data->sa_q_is_fixed),
-             abd_q_tilde             = std::span(host_sim_data->sa_q_tilde)](const uint body_idx)
-            {
-                const float substep_dt = get_scene_params().get_substep_dt();
-                const float h          = substep_dt;
-                const float h_2_inv    = 1.f / (h * h);
-
-                const uint4 indices = abd_indices[body_idx];
-
-                float3   delta_q[4]  = {abd_q[indices[0]] - abd_q_tilde[indices[0]],
-                                        abd_q[indices[1]] - abd_q_tilde[indices[1]],
-                                        abd_q[indices[2]] - abd_q_tilde[indices[2]],
-                                        abd_q[indices[3]] - abd_q_tilde[indices[3]]};
-                float4x4 mass_matrix = abd_mass_matrix[body_idx];
-                float3   gradient[4] = {Zero3, Zero3, Zero3, Zero3};
-
-                // if (sa_q_is_fixed[indices[0]])
-                {
-                    mass_matrix = abd_stiffness_dirichlet[body_idx] * mass_matrix;
-                }
-
-                for (uint ii = 0; ii < 4; ii++)
-                {
-                    for (uint jj = 0; jj < 4; jj++)
-                    {
-                        gradient[ii] += mass_matrix[ii][jj] * delta_q[jj];
-                    }
-                }
-
-                abd_gradients[4 * body_idx + 0] = h_2_inv * gradient[0];
-                abd_gradients[4 * body_idx + 1] = h_2_inv * gradient[1];
-                abd_gradients[4 * body_idx + 2] = h_2_inv * gradient[2];
-                abd_gradients[4 * body_idx + 3] = h_2_inv * gradient[3];
-
-                abd_hessians[16 * body_idx + 0] = float3x3::eye(h_2_inv * mass_matrix[0][0]);
-                abd_hessians[16 * body_idx + 1] = float3x3::eye(h_2_inv * mass_matrix[1][1]);
-                abd_hessians[16 * body_idx + 2] = float3x3::eye(h_2_inv * mass_matrix[2][2]);
-                abd_hessians[16 * body_idx + 3] = float3x3::eye(h_2_inv * mass_matrix[3][3]);
-
-                uint idx = 4;
-                for (uint ii = 0; ii < 4; ii++)
-                {
-                    for (uint jj = 0; jj < 4; jj++)
-                    {
-                        if (ii != jj)
-                        {
-                            abd_hessians[body_idx * 16 + idx] = float3x3::eye(h_2_inv * mass_matrix[ii][jj]);
-                            idx += 1;
-                        }
-                    }
-                }
-            },
-            32);
-    }
-}
-void NewtonSolver::host_evaluate_orthogonality()
-{
-    auto& abd_data = host_sim_data->get_abd_orthogonality_data();
-
-    if (abd_data.is_valid())
-    {
-        CpuParallel::parallel_for(
-            0,
-            abd_data.get_num_indices(),
-            [abd_q                   = std::span(host_sim_data->sa_q),
-             abd_gradients           = std::span(abd_data.constraint_gradients),
-             abd_hessians            = std::span(abd_data.constraint_hessians),
-             sa_affine_bodies_kappa  = std::span(abd_data.abd_kappa),
-             sa_affine_bodies_volume = std::span(abd_data.abd_volume),
-             abd_ortho_indices       = std::span(abd_data.constraint_indices)](const uint body_idx)
-            {
-                float3   ortho_gradient[3] = {Zero3};
-                float3x3 ortho_hessian[6]  = {Zero3x3};
-                // float3x3 ortho_hessian[3][3] = {{Zero3x3, Zero3x3, Zero3x3},
-                //                                 {Zero3x3, Zero3x3, Zero3x3},
-                //                                 {Zero3x3, Zero3x3, Zero3x3}};
-
-                const float substep_dt = get_scene_params().get_substep_dt();
-                const float h          = substep_dt;
-                const float h_2_inv    = 1.f / (h * h);
-
-                const uint3 indices = abd_ortho_indices[body_idx];
-                float3x3 A = luisa::make_float3x3(abd_q[indices[0]], abd_q[indices[1]], abd_q[indices[2]]);
-
-                const float kappa = sa_affine_bodies_kappa[body_idx];
-                const float V     = sa_affine_bodies_volume[body_idx];
-
-                float stiff = kappa * V;
-                for (uint ii = 0; ii < 3; ii++)
-                {
-                    float3 grad = (-1.0f) * A[ii];
-                    for (uint jj = 0; jj < 3; jj++)
-                    {
-                        grad += dot_vec(A[ii], A[jj]) * A[jj];
-                    }
-                    // cgB.block<3, 1>(3 + 3 * ii, 0) -= 4 * stiff * float3_to_eigen3(grad);
-                    ortho_gradient[ii] += 4.0f * stiff * grad;
-                }
-                uint idx = 0;
-                for (uint ii = 0; ii < 3; ii++)
-                {
-                    for (uint jj = ii; jj < 3; jj++)
-                    {
-                        float3x3 hessian = Zero3x3;
-                        if (ii == jj)
-                        {
-                            float3x3 qiqiT = outer_product(A[ii], A[ii]);
-                            float3x3 qiTqi = (dot_vec(A[ii], A[ii]) - 1.0f) * Identity3x3;
-                            hessian        = qiqiT + qiTqi;
-                            for (uint kk = 0; kk < 3; kk++)
-                            {
-                                hessian = hessian + outer_product(A[kk], A[kk]);
-                            }
-                        }
-                        else
-                        {
-                            hessian = outer_product(A[jj], A[ii]) + dot_vec(A[ii], A[jj]) * Identity3x3;
-                        }
-                        // LUISA_INFO("hess of {} adj {} = {}", ii, jj, hessian);
-                        // cgA.block<3, 3>(3 + 3 * ii, 3 + 3 * jj) += 4.0f * stiff * float3x3_to_eigen3x3(hessian);
-                        ortho_hessian[idx] = ortho_hessian[idx] + 4.0f * stiff * hessian;
-                        // ortho_hessian[ii][jj] = 4.0f * stiff * hessian;
-                        idx += 1;
-                    }
-                }
-
-                //
-                //   0   1   2  |  0   3   4
-                //  t1   3   4  |  5   1   6
-                //  t2  t4   5  |  7   8   2
-                auto* body_grad_ptr = &abd_gradients[3 * body_idx];
-                auto* body_hess_ptr = &abd_hessians[9 * body_idx];
-                body_grad_ptr[0]    = ortho_gradient[0];
-                body_grad_ptr[1]    = ortho_gradient[1];
-                body_grad_ptr[2]    = ortho_gradient[2];
-
-                body_hess_ptr[0] = ortho_hessian[0];
-                body_hess_ptr[1] = ortho_hessian[3];
-                body_hess_ptr[2] = ortho_hessian[5];
-                body_hess_ptr[3] = ortho_hessian[1];
-                body_hess_ptr[4] = ortho_hessian[2];
-                body_hess_ptr[5] = transpose(ortho_hessian[1]);
-                body_hess_ptr[6] = ortho_hessian[4];
-                body_hess_ptr[7] = transpose(ortho_hessian[2]);
-                body_hess_ptr[8] = transpose(ortho_hessian[4]);
-            },
-            32);
-    }
-}
-void NewtonSolver::host_evaluate_dirichlet()
-{
-    return;
-    LUISA_ERROR("Dirichlet BC not implemented on host solver yet.");
-}
-void NewtonSolver::host_evaluate_ground_collision()
-{
-    if (!get_scene_params().use_floor)
-        return;
-
-    auto calculate_per_vert_grad_hess_template =
-        [sa_x                           = std::span(host_sim_data->sa_x),
-         sa_x_step_start                = std::span(host_sim_data->sa_x_step_start),
-         sa_contact_active_verts_offset = std::span(host_sim_data->sa_contact_active_verts_offset),
-         sa_contact_active_verts_d_hat  = std::span(host_sim_data->sa_contact_active_verts_d_hat),
-         sa_contact_active_verts_friction_coeff = std::span(host_sim_data->sa_contact_active_verts_friction_coeff),
-         sa_is_fixed       = std::span(host_mesh_data->sa_is_fixed),
-         sa_rest_vert_area = std::span(host_mesh_data->sa_rest_vert_area),
-         floor_y           = get_scene_params().floor.y,
-         stiffness_ground  = get_scene_params().stiffness_collision,
-         collision_type = get_scene_params().contact_energy_type](const uint vid, float3& out_gradient, float3x3& out_hessian)
-    {
-        bool collide = false;
-        if (!sa_is_fixed[vid] && get_scene_params().use_floor)
-        {
-            float3 x_k = sa_x[vid];
-            float3 x_0 = sa_x_step_start[vid];
-
-            float thickness = sa_contact_active_verts_offset[vid];
-            float d_hat     = sa_contact_active_verts_d_hat[vid];
-            float curr_dist = x_k.y - floor_y;
-            float init_dist = x_0.y - floor_y;
-
-            float3 normal = luisa::make_float3(0, 1, 0);
-            float  area   = sa_rest_vert_area[vid];
-            float  stiff  = stiffness_ground * area;
-
-            // Repulsion
-            if (curr_dist - thickness < d_hat)
-            {
-                float k1;
-                float k2;
-                if (collision_type == 0)
-                {
-                    k1 = stiff * (curr_dist - thickness - d_hat);
-                    k2 = stiff;
-                }
-                else
-                {
-                    k1 = stiff * ipc::barrier_first_derivative(curr_dist - thickness, d_hat);
-                    k2 = stiff * ipc::barrier_second_derivative(curr_dist - thickness, d_hat);
-                }
-                if (luisa::isnan(k1 * k2) || luisa::isinf(k1 * k2))
-                {
-                    LUISA_ERROR("NaN detected in ground collision computation: dist = {}, thickness = {}, d_hat = {}, k1 = {}, k2 = {}",
-                                curr_dist,
-                                thickness,
-                                d_hat,
-                                k1,
-                                k2);
-                }
-                out_gradient = k1 * normal;
-                out_hessian  = k2 * outer_product(normal, normal);
-                collide      = true;
-            }
-            // Friction
-            if (init_dist - thickness < d_hat)
-            {
-                float k1;
-                if (collision_type == 0)
-                {
-                    k1 = stiff * (init_dist - thickness - d_hat);
-                }
-                else
-                {
-                    k1 = stiff * ipc::barrier_first_derivative(init_dist - thickness, d_hat);
-                }
-                float3 rel_dx       = x_k - x_0;
-                float  friction_mu  = sa_contact_active_verts_friction_coeff[vid];
-                float  friction_eps = Friction::ando_barrier::friction_eps;
-                auto   lambda_mu    = -k1 * friction_mu;
-                auto   friction_grad_hess =
-                    Friction::ipc_barrier::compute_friction_gradient_hessian(lambda_mu, normal, rel_dx, friction_eps);
-                out_gradient += friction_grad_hess.first;
-                out_hessian = out_hessian + friction_grad_hess.second;
-                collide     = true;
-            }
-        }
-        return collide;
-    };
-
-    // Shared the gradient and hessian buffer with inertia: using the same per-dof constitution
-    auto& inertia_data = host_sim_data->get_soft_inertia_data();
-    if (inertia_data.is_valid())
-    {
-        CpuParallel::parallel_for(0,
-                                  inertia_data.get_num_indices(),
-                                  [output_gradient = std::span(inertia_data.constraint_gradients),
-                                   output_hessian  = std::span(inertia_data.constraint_hessians),
-                                   &calculate_per_vert_grad_hess_template](const uint vid)
-                                  {
-                                      float3   gradient = Zero3;
-                                      float3x3 hessian  = Zero3x3;
-                                      bool collide = calculate_per_vert_grad_hess_template(vid, gradient, hessian);
-                                      if (collide)
-                                      {
-                                          buffer_add(output_gradient, vid, gradient);
-                                          buffer_add(output_hessian, vid, hessian);
-                                      }
-                                  });
-    }
-
-    const uint prefix   = host_sim_data->num_verts_soft;
-    auto&      abd_data = host_sim_data->get_abd_inertia_data();
-
-    if (abd_data.is_valid())
-    {
-        CpuParallel::parallel_for(
-            0,
-            host_sim_data->num_verts_rigid,
-            [output_gradient   = std::span(abd_data.constraint_gradients),
-             output_hessian    = std::span(abd_data.constraint_hessians),
-             sa_scaled_model_x = std::span(host_sim_data->sa_scaled_model_x),
-             sa_x_to_dof_map   = std::span(host_sim_data->sa_x_to_dof_map),
-             prefix_vid        = host_sim_data->num_verts_soft,
-             &calculate_per_vert_grad_hess_template](const uint index)
-            {
-                float3     gradient = Zero3;
-                float3x3   hessian  = Zero3x3;
-                const uint vid      = prefix_vid + index;
-                bool       collide  = calculate_per_vert_grad_hess_template(vid, gradient, hessian);
-                if (collide)
-                {
-                    const uint dof_idx  = sa_x_to_dof_map[vid] & Attributions::RIGID_BODY_MASK;
-                    const uint body_idx = (dof_idx - prefix_vid) / 4;
-                    float3     model_x  = sa_scaled_model_x[vid];
-                    float4     weight   = luisa::make_float4(1.0f, model_x);
-                    uint       idx      = 4;
-                    for (uint ii = 0; ii < 4; ii++)
-                    {
-                        float  wi          = weight[ii];
-                        float3 affine_grad = wi * gradient;
-                        CpuParallel::spin_atomic<float3>::fetch_add(output_gradient[4 * body_idx + ii], affine_grad);
-                        for (uint jj = 0; jj < 4; jj++)
-                        {
-                            float    wj          = weight[jj];
-                            float3x3 affine_hess = wi * wj * hessian;
-                            if (ii == jj)
-                            {
-                                atomic_buffer_add(output_hessian, 16 * body_idx + ii, affine_hess);
-                            }
-                            else
-                            {
-                                atomic_buffer_add(output_hessian, 16 * body_idx + idx, affine_hess);
-                                idx += 1;
-                            }
-                        }
-                    }
-                }
-            });
-    }
-}
 void NewtonSolver::host_test_dynamics(luisa::compute::Stream& stream)
 {
     stream << luisa::compute::synchronize();
@@ -2027,8 +1038,8 @@ void NewtonSolver::host_test_dynamics(luisa::compute::Stream& stream)
                 const float rest_angle = sa_bending_edges_rest_angle[eid];
 
                 float3 gradients[4] = {Zero3, Zero3, Zero3, Zero3};
-                float  angle =
-                    BendingEnergy::compute_d_theta_d_x(vert_pos[0], vert_pos[1], vert_pos[2], vert_pos[3], gradients);
+                float  angle        = BendingEnergyUtils::compute_d_theta_d_x(
+                    vert_pos[0], vert_pos[1], vert_pos[2], vert_pos[3], gradients);
                 const float delta_angle = angle - rest_angle;
 
                 EigenFloat12x12 H = EigenFloat12x12::Zero();
@@ -2723,217 +1734,6 @@ void NewtonSolver::host_test_dynamics(luisa::compute::Stream& stream)
         LUISA_ERROR("NaN/INF detected in Eigen PCG solve!");
     }
 }
-void NewtonSolver::host_evaluete_stretch_spring()
-{
-    auto& stretch_springs = host_sim_data->get_stretch_spring_data();
-
-    CpuParallel::parallel_for(0,
-                              stretch_springs.get_num_indices(),
-                              [sa_x     = std::span(host_sim_data->sa_x),
-                               sa_edges = std::span(stretch_springs.constraint_indices),
-                               sa_rest_length = std::span(stretch_springs.sa_stretch_spring_rest_state_length),
-                               sa_stretch_spring_stiffness = std::span(stretch_springs.sa_stretch_spring_stiffness),
-                               output_gradient_ptr = std::span(stretch_springs.constraint_gradients),
-                               output_hessian_ptr = std::span(stretch_springs.constraint_hessians)](const uint eid)
-                              {
-                                  uint2 edge = sa_edges[eid];
-
-                                  float3   vert_pos[2]  = {sa_x[edge[0]], sa_x[edge[1]]};
-                                  float3   gradients[2] = {Zero3, Zero3};
-                                  float3x3 He           = luisa::make_float3x3(0.0f);
-
-                                  const float L = sa_rest_length[eid];
-                                  const float stiffness_stretch_spring = sa_stretch_spring_stiffness[eid];
-
-                                  float3 diff = vert_pos[0] - vert_pos[1];
-                                  float  l    = max_scalar(length_vec(diff), Epsilon);
-                                  float  l0   = L;
-                                  float  C    = l - l0;
-
-                                  float3 dir = diff / l;
-                                  // float3 dir = normalize_vec(diff);
-                                  float3x3 nnT           = outer_product(dir, dir);
-                                  float    x_inv         = 1.f / l;
-                                  float    x_squared_inv = x_inv * x_inv;
-
-                                  gradients[0] = stiffness_stretch_spring * dir * C;
-                                  gradients[1] = -gradients[0];
-                                  He           = stiffness_stretch_spring * nnT
-                                       + stiffness_stretch_spring * max_scalar(1.0f - L * x_inv, 0.0f)
-                                             * (luisa::make_float3x3(1.0f) - nnT);
-
-                                  // Output
-                                  {
-                                      output_gradient_ptr[eid * 2 + 0] = gradients[0];
-                                      output_gradient_ptr[eid * 2 + 1] = gradients[1];
-
-                                      output_hessian_ptr[eid * 4 + 0] = He;
-                                      output_hessian_ptr[eid * 4 + 1] = He;
-                                      output_hessian_ptr[eid * 4 + 2] = -1.0f * He;
-                                      output_hessian_ptr[eid * 4 + 3] = -1.0f * He;
-                                  }
-                              });
-}
-void NewtonSolver::host_evaluete_stretch_face()
-{
-    auto& stretch_faces = host_sim_data->get_stretch_face_data();
-
-    CpuParallel::parallel_for(
-        0,
-        stretch_faces.get_num_indices(),
-        [sa_x                       = std::span(host_sim_data->sa_x),
-         sa_faces                   = std::span(stretch_faces.constraint_indices),
-         sa_stretch_faces_rest_area = std::span(stretch_faces.sa_stretch_faces_rest_area),
-         sa_stretch_faces_Dm_inv    = std::span(stretch_faces.sa_stretch_faces_Dm_inv),
-         sa_stretch_faces_mu_lambda = std::span(stretch_faces.sa_stretch_faces_mu_lambda),
-         output_gradient_ptr        = std::span(stretch_faces.constraint_gradients),
-         output_hessian_ptr         = std::span(stretch_faces.constraint_hessians)](const uint fid)
-        {
-            uint3 face = sa_faces[fid];
-
-            float3 vert_pos[3] = {sa_x[face[0]], sa_x[face[1]], sa_x[face[2]]};
-            // float3   gradients[3] = {Zero3, Zero3, Zero3};
-            // float3x3 hessians[9]  = {Zero3x3};
-            float3x3 gradients;
-            float9x9 hessians;
-            float2x2 Dm_inv = sa_stretch_faces_Dm_inv[fid];
-            float    area   = sa_stretch_faces_rest_area[fid];
-
-            auto [mu_cloth, lambda_cloth] = sa_stretch_faces_mu_lambda[fid];
-
-            StretchEnergy::compute_gradient_hessian(
-                vert_pos[0], vert_pos[1], vert_pos[2], Dm_inv, mu_cloth, lambda_cloth, area, gradients, hessians);
-
-            // Output
-            {
-                output_gradient_ptr[fid * 3 + 0] = gradients[0];
-                output_gradient_ptr[fid * 3 + 1] = gradients[1];
-                output_gradient_ptr[fid * 3 + 2] = gradients[2];
-            }
-            {
-                // 0 1 2
-                // 3 4 5
-                // 6 7 8
-                output_hessian_ptr[fid * 9 + 0] = hessians.block(0, 0);
-                output_hessian_ptr[fid * 9 + 1] = hessians.block(1, 1);
-                output_hessian_ptr[fid * 9 + 2] = hessians.block(2, 2);
-
-                output_hessian_ptr[fid * 9 + 3] = hessians.block(1, 0);  // lower triangle
-                output_hessian_ptr[fid * 9 + 4] = hessians.block(2, 0);
-                output_hessian_ptr[fid * 9 + 5] = hessians.block(0, 1);
-                output_hessian_ptr[fid * 9 + 6] = hessians.block(2, 1);
-                output_hessian_ptr[fid * 9 + 7] = hessians.block(0, 2);
-                output_hessian_ptr[fid * 9 + 8] = hessians.block(1, 2);
-
-                // output_hessian_ptr[fid * 9 + 0] = hessians[0];
-                // output_hessian_ptr[fid * 9 + 1] = hessians[4];
-                // output_hessian_ptr[fid * 9 + 2] = hessians[8];
-
-                // output_hessian_ptr[fid * 9 + 3] = hessians[1];
-                // output_hessian_ptr[fid * 9 + 4] = hessians[2];
-                // output_hessian_ptr[fid * 9 + 5] = hessians[3];
-                // output_hessian_ptr[fid * 9 + 6] = hessians[5];
-                // output_hessian_ptr[fid * 9 + 7] = hessians[6];
-                // output_hessian_ptr[fid * 9 + 8] = hessians[7];
-            }
-        });
-}
-void NewtonSolver::host_evaluete_bending()
-{
-    auto& bending_edges = host_sim_data->get_bending_edge_data();
-
-    CpuParallel::parallel_for(
-        0,
-        bending_edges.get_num_indices(),
-        [sa_x                        = std::span(host_sim_data->sa_x),
-         sa_bending_edges            = std::span(bending_edges.constraint_indices),
-         sa_bending_edges_Q          = std::span(bending_edges.sa_bending_edges_Q),
-         sa_bending_edges_rest_angle = std::span(bending_edges.sa_bending_edges_rest_angle),
-         sa_bending_edges_rest_area  = std::span(bending_edges.sa_bending_edges_rest_area),
-         sa_bending_edges_stiffness  = std::span(bending_edges.sa_bending_edges_stiffness),
-         output_gradient_ptr         = std::span(bending_edges.constraint_gradients),
-         output_hessian_ptr          = std::span(bending_edges.constraint_hessians),
-         scaling = get_scene_params().get_bending_stiffness_scaling()](const uint eid)
-        {
-            uint4  edge         = sa_bending_edges[eid];
-            float3 vert_pos[4]  = {sa_x[edge[0]], sa_x[edge[1]], sa_x[edge[2]], sa_x[edge[3]]};
-            float3 gradients[4] = {Zero3, Zero3, Zero3, Zero3};
-
-            if constexpr (true)  // Dehedral angle beding
-            {
-                const float rest_angle = sa_bending_edges_rest_angle[eid];
-                const float angle =
-                    BendingEnergy::compute_d_theta_d_x(vert_pos[0], vert_pos[1], vert_pos[2], vert_pos[3], gradients);
-                const float delta_angle = angle - rest_angle;
-
-                const float area                 = sa_bending_edges_rest_area[eid];
-                const float stiff                = sa_bending_edges_stiffness[eid] * scaling * area;
-                output_gradient_ptr[eid * 4 + 0] = stiff * delta_angle * gradients[0];
-                output_gradient_ptr[eid * 4 + 1] = stiff * delta_angle * gradients[1];
-                output_gradient_ptr[eid * 4 + 2] = stiff * delta_angle * gradients[2];
-                output_gradient_ptr[eid * 4 + 3] = stiff * delta_angle * gradients[3];
-
-                auto outer = [&gradients, stiff](uint ii, uint jj) -> float3x3
-                {
-                    // Use simple Gauss-Newton approximation
-                    return outer_product(stiff * gradients[ii], gradients[jj]);
-                };
-
-                output_hessian_ptr[eid * 16 + 0] = outer(0, 0);
-                output_hessian_ptr[eid * 16 + 1] = outer(1, 1);
-                output_hessian_ptr[eid * 16 + 2] = outer(2, 2);
-                output_hessian_ptr[eid * 16 + 3] = outer(3, 3);
-
-                uint idx = 4;
-                for (uint ii = 0; ii < 4; ii++)
-                {
-                    for (uint jj = 0; jj < 4; jj++)
-                    {
-                        if (ii != jj)
-                        {
-                            output_hessian_ptr[eid * 16 + idx] = outer(ii, jj);
-                            idx += 1;
-                        }
-                    }
-                }
-            }
-            if constexpr (false)  // Quadratic bending
-            {
-                float4x4 m_Q = sa_bending_edges_Q[eid];
-
-                for (uint ii = 0; ii < 4; ii++)
-                {
-                    for (uint jj = 0; jj < 4; jj++)
-                    {
-                        gradients[ii] += m_Q[ii][jj] * vert_pos[jj];  // -Qx
-                    }
-                    gradients[ii] = scaling * gradients[ii];
-                }
-
-                output_gradient_ptr[eid * 4 + 0] = gradients[0];
-                output_gradient_ptr[eid * 4 + 1] = gradients[1];
-                output_gradient_ptr[eid * 4 + 2] = gradients[2];
-                output_gradient_ptr[eid * 4 + 3] = gradients[3];
-                auto hess                        = scaling * luisa::make_float3x3(1.0f);
-                output_hessian_ptr[eid * 16 + 0] = m_Q[0][0] * hess;
-                output_hessian_ptr[eid * 16 + 1] = m_Q[1][1] * hess;
-                output_hessian_ptr[eid * 16 + 2] = m_Q[2][2] * hess;
-                output_hessian_ptr[eid * 16 + 3] = m_Q[3][3] * hess;
-                uint idx                         = 4;
-                for (uint ii = 0; ii < 4; ii++)
-                {
-                    for (uint jj = 0; jj < 4; jj++)
-                    {
-                        if (ii != jj)
-                        {
-                            output_hessian_ptr[eid * 16 + idx] = m_Q[jj][ii] * hess;
-                            idx += 1;
-                        }
-                    }
-                }
-            }
-        });
-}
 
 
 template <typename Derived>
@@ -2947,23 +1747,25 @@ void assembly_template2(const uint                                              
     // constexpr size_t N = constaints.get_num_verts_per_constaint();
     constexpr size_t N = Derived::get_num_verts_per_constaint();
 
-    // auto& sa_vert_adj_material_force_verts_csr = constaints.get_vert_adj_material_force_verts_csr();
     auto& vert_adj_constraints_csr     = constaints.get_vert_adj_constraints_csr();
     auto& constaint_gradients          = constaints.get_constraint_gradients();
     auto& constaint_hessians           = constaints.get_constraint_hessians();
     auto& constaint_offsets_in_adjlist = constaints.get_constraint_offsets_in_adjlist();
     auto& indices                      = constaints.get_indices();
 
-    //  sa_vert_adj_material_force_verts_csr = std::span(host_sim_data->sa_vert_adj_material_force_verts_csr),
-    //  sa_cgB      = std::span(host_sim_data->sa_cgB),
-    //  sa_cgA_diag = std::span(host_sim_data->sa_cgA_diag),
-    //  sa_cgA_offdiag_triplet = std::span(host_sim_data->sa_cgA_fixtopo_offdiag_triplet)
-
     const uint curr_prefix = sa_vert_adj_material_force_verts_csr[vid];
     const uint next_prefix = sa_vert_adj_material_force_verts_csr[vid + 1];
 
     const uint curr_prefix_bending = vert_adj_constraints_csr[vid];
     const uint next_prefix_bending = vert_adj_constraints_csr[vid + 1];
+
+    // if (next_prefix - curr_prefix > 100)
+    // {
+    //     LUISA_ERROR("Error in assembly: vertex {} has too many adjacent constraints ({}), constitution = {}",
+    //                 vid,
+    //                 next_prefix - curr_prefix,
+    //                 constaints.get_constitution_name());
+    // }
 
     for (uint j = curr_prefix_bending; j < next_prefix_bending; j++)
     {
@@ -3098,6 +1900,13 @@ void NewtonSolver::host_material_energy_assembly()
 }
 
 // Device functions
+void NewtonSolver::device_construct_lbvh(luisa::compute::Stream& stream)
+{
+    lbvh_face->reduce_face_tree_aabb(stream, sim_data->sa_x_step_start, mesh_data->sa_faces);
+    lbvh_edge->reduce_edge_tree_aabb(stream, sim_data->sa_x_step_start, mesh_data->sa_edges);
+    lbvh_face->construct_tree(stream);
+    lbvh_edge->construct_tree(stream);
+}
 void NewtonSolver::device_broadphase_ccd(luisa::compute::Stream& stream)
 {
     narrow_phase_detector->reset_broadphase_count(stream);
@@ -3162,11 +1971,6 @@ void NewtonSolver::device_broadphase_dcd(luisa::compute::Stream& stream)
 }
 void NewtonSolver::device_narrowphase_ccd(luisa::compute::Stream& stream)
 {
-    narrow_phase_detector->reset_toi(stream);
-
-    stream << fn_gound_collision_ccd(get_scene_params().floor.y, get_scene_params().use_floor)
-                  .dispatch(sim_data->sa_x.size());
-
     // stream << collision_data->toi_per_vert.view(0, 1).copy_to(host_collision_data->toi_per_vert.data())
     //        << luisa::compute::synchronize();
     // LUISA_INFO("  Min TOI after ground collision check: {:7.6f}", host_collision_data->toi_per_vert.front());
@@ -3223,83 +2027,77 @@ void NewtonSolver::device_narrowphase_dcd(luisa::compute::Stream& stream)
                                                   sim_data->sa_contact_active_verts_offset,
                                                   kappa);
 }
-void NewtonSolver::device_update_contact_list(luisa::compute::Device& device, luisa::compute::Stream& stream)
+void NewtonSolver::device_reset_contact_list(luisa::compute::Stream& stream)
 {
     narrow_phase_detector->reset_broadphase_count(stream);
     narrow_phase_detector->reset_narrowphase_count(stream);
     narrow_phase_detector->reset_pervert_collision_count(stream);
+}
+void NewtonSolver::device_update_contact_list(luisa::compute::Device& device, luisa::compute::Stream& stream)
+{
+    // Has been reset before
+    // device_reset_contact_list(stream);
 
     if (get_scene_params().use_self_collision)
-        device_broadphase_dcd(stream);
-
-    bool succ_broad = narrow_phase_detector->download_broadphase_collision_count(stream);
-    if (!succ_broad)
     {
-        narrow_phase_detector->resize_buffers(device, stream);  // Resize broadphase buffers
-        narrow_phase_detector->reset_broadphase_count(stream);
         device_broadphase_dcd(stream);
-        narrow_phase_detector->download_broadphase_collision_count(stream);
+        bool succ_broad = narrow_phase_detector->download_broadphase_collision_count(stream);
+        if (!succ_broad)
+        {
+            narrow_phase_detector->resize_buffers(device, stream);  // Resize broadphase buffers
+            narrow_phase_detector->reset_broadphase_count(stream);
+            device_broadphase_dcd(stream);
+            narrow_phase_detector->download_broadphase_collision_count(stream);
+        }
     }
 
     // lbvh_face->check_health(stream);
     // lbvh_edge->check_health(stream);
 
     if (get_scene_params().use_self_collision)
-        device_narrowphase_dcd(stream);
-
-    bool succ_narrow = narrow_phase_detector->download_narrowphase_collision_count(stream);
-    if (!succ_narrow)
     {
-        narrow_phase_detector->resize_buffers(device, stream);  // Resize narrowphase buffers
-        narrow_phase_detector->reset_narrowphase_count(stream);
         device_narrowphase_dcd(stream);
+        bool succ_narrow = narrow_phase_detector->download_narrowphase_collision_count(stream);
+        if (!succ_narrow)
+        {
+            narrow_phase_detector->resize_buffers(device, stream);  // Resize narrowphase buffers
+            narrow_phase_detector->reset_narrowphase_count(stream);
+            device_narrowphase_dcd(stream);
+            narrow_phase_detector->download_narrowphase_collision_count(stream);
+        }
+    }
+    else
+    {
         narrow_phase_detector->download_narrowphase_collision_count(stream);
     }
-
-    // narrow_phase_detector->download_narrowphase_list(stream);
-    // auto&      host_count        = host_collision_data->narrow_phase_collision_count;
-    // auto&      narrow_phase_list = host_collision_data->narrow_phase_list;
-    // const uint num_pairs         = host_count.front();
-    // float      min_dist          = CpuParallel::parallel_for_and_reduce(
-    //     0,
-    //     num_pairs,
-    //     [&](const uint pair_idx)
-    //     {
-    //         const auto& pair    = narrow_phase_list[pair_idx];
-    //         float4      weight  = pair.get_weight();
-    //         uint4       indices = pair.get_indices();
-    //         float3      diff =
-    //             weight[0] * host_sim_data->sa_x[indices[0]] + weight[1] * host_sim_data->sa_x[indices[1]]
-    //             + weight[2] * host_sim_data->sa_x[indices[2]] + weight[3] * host_sim_data->sa_x[indices[3]];
-    //         return length_vec(diff);
-    //     },
-    //     [](float a, float b) { return min_scalar(a, b); },
-    //     std::numeric_limits<float>::max());
-    // LUISA_INFO("    Narrowphase collision pairs: {}, min_dist = {:7.6f}", num_pairs, min_dist);
-    // float max_k1 = std::min_element(host_collision_data->narrow_phase_list.begin(),
-    //                                 host_collision_data->narrow_phase_list.begin() + num_pairs,
-    //                                 [](const auto& a, const auto& b) { return a.get_k1() < b.get_k1(); })
-    //                    ->get_k1();
-    // LUISA_INFO("    Narrowphase collision pairs: {}, max_k1 = {:7.6f}", num_pairs, max_k1);
 }
 void NewtonSolver::device_ccd_line_search(luisa::compute::Device& device, luisa::compute::Stream& stream)
 {
-    if (get_scene_params().use_self_collision)
-        device_broadphase_ccd(stream);
+    // narrow_phase_detector->reset_toi(stream);
+    stream << fn_reset_float(collision_data->toi_per_vert, 1.0f).dispatch(collision_data->toi_per_vert.size());
 
-    bool succ = narrow_phase_detector->download_broadphase_collision_count(stream);
-    if (!succ)
+    if (get_scene_params().use_floor)
     {
-        LUISA_INFO("Broadphase collision count out of range, reallocate buffers and retry.");
-        narrow_phase_detector->resize_buffers(device, stream);  // Resize broadphase buffers
-        device_broadphase_ccd(stream);
-        narrow_phase_detector->download_broadphase_collision_count(stream);
+        stream << fn_gound_collision_ccd(get_scene_params().floor.y, get_scene_params().use_floor)
+                      .dispatch(sim_data->sa_x.size());
     }
 
-    // lbvh_face->check_health(stream);
-    // lbvh_edge->check_health(stream);
+    if (get_scene_params().use_self_collision)
+    {
+        device_broadphase_ccd(stream);
+        bool succ = narrow_phase_detector->download_broadphase_collision_count(stream);
+        if (!succ)
+        {
+            LUISA_INFO("Broadphase collision count out of range, reallocate buffers and retry.");
+            narrow_phase_detector->resize_buffers(device, stream);  // Resize broadphase buffers
+            device_broadphase_ccd(stream);
+            narrow_phase_detector->download_broadphase_collision_count(stream);
+        }
+        // lbvh_face->check_health(stream);
+        // lbvh_edge->check_health(stream);
 
-    device_narrowphase_ccd(stream);
+        device_narrowphase_ccd(stream);
+    }
 }
 void NewtonSolver::device_post_dist_check(luisa::compute::Stream& stream)
 {
@@ -3407,6 +2205,9 @@ void NewtonSolver::host_SpMV(luisa::compute::Stream&    stream,
             return;
         }
 
+        auto cgMutex = std::span(reinterpret_cast<luisa::spin_mutex*>(host_sim_data->sa_cgMutex.data()),
+                                 host_sim_data->sa_cgMutex.size());
+
         // Material Energy
         auto fn_SpMV_reduce_by_key =
             [&](const std::vector<MatrixTriplet3x3>& sa_cgA_offdiag_triplet, const uint gridDim, const uint triplet_count)
@@ -3418,11 +2219,11 @@ void NewtonSolver::host_SpMV(luisa::compute::Stream&    stream,
                 {
                     const uint blockDim    = 256;
                     const uint blockPrefix = blockIdx * blockDim;
+                    const uint blockSuffix = min_scalar(blockPrefix + blockDim, triplet_count);
+                    // LUISA_INFO("SpMV reduce by key block {}, prefix {}, suffix {}", blockIdx, blockPrefix, blockSuffix);
 
                     float3 sum_contrib = luisa::make_float3(0.0f);
-                    for (uint triplet_idx = blockPrefix;
-                         triplet_idx < min_scalar(blockPrefix + blockDim, triplet_count);
-                         triplet_idx++)
+                    for (uint triplet_idx = blockPrefix; triplet_idx < blockSuffix; triplet_idx++)
                     {
                         auto       triplet         = sa_cgA_offdiag_triplet[triplet_idx];
                         const uint vid             = triplet.get_row_idx();
@@ -3456,7 +2257,10 @@ void NewtonSolver::host_SpMV(luisa::compute::Stream&    stream,
 
                             if (MatrixTriplet::write_use_atomic(matrix_property))
                             {
-                                CpuParallel::spin_atomic<float3>::fetch_add(output_ptr[vid], sum_contrib);
+                                cgMutex[vid].lock();
+                                output_ptr[vid] += sum_contrib;
+                                cgMutex[vid].unlock();
+                                // CpuParallel::spin_atomic<float3>::fetch_add(output_ptr[vid], sum_contrib);
                                 // auto atomic_view = (CpuParallel::spin_atomic<float3>*)(&output_ptr[vid]);
                                 // output_ptr[vid] += sum_contrib;
                             }
@@ -3470,15 +2274,18 @@ void NewtonSolver::host_SpMV(luisa::compute::Stream&    stream,
                 });
         };
 
+        const uint num_triplet_material = host_sim_data->sa_cgA_fixtopo_offdiag_triplet.size();
+        // LUISA_INFO("Host SpMV off-diag part with {} triplets", num_triplet_material);
         fn_SpMV_reduce_by_key(host_sim_data->sa_cgA_fixtopo_offdiag_triplet,
-                              get_dispatch_block(sim_data->sa_cgA_fixtopo_offdiag_triplet.size(), 256),
-                              sim_data->sa_cgA_fixtopo_offdiag_triplet.size());
+                              get_dispatch_block(num_triplet_material, 256),
+                              num_triplet_material);
 
-        const auto& host_count     = host_collision_data->narrow_phase_collision_count;
-        const uint reduced_triplet = host_count[CollisionPair::CollisionCount::total_adj_verts_offset()];
+        const auto& host_count = host_collision_data->narrow_phase_collision_count;
+        const uint num_triplet_contact = host_count[CollisionPair::CollisionCount::total_adj_verts_offset()];
+        // LUISA_INFO("Host SpMV off-diag contact part with {} triplets", num_triplet_contact);
         fn_SpMV_reduce_by_key(host_collision_data->triplet_data.sa_cgA_contact_offdiag_triplet,
-                              get_dispatch_block(reduced_triplet, 256),
-                              reduced_triplet);
+                              get_dispatch_block(num_triplet_contact, 256),
+                              num_triplet_contact);
     }
 }
 void NewtonSolver::host_solve_eigen(luisa::compute::Stream& stream)
@@ -3880,6 +2687,10 @@ void NewtonSolver::physics_step_CPU(luisa::compute::Device& device, luisa::compu
 
     auto update_contact_set = [&]()
     {
+        device_reset_contact_list(stream);
+
+        if (!get_scene_params().use_self_collision)
+            return;
         stream << sim_data->sa_x.copy_from(host_sim_data->sa_x.data());
 
         device_update_contact_list(device, stream);
@@ -3894,6 +2705,8 @@ void NewtonSolver::physics_step_CPU(luisa::compute::Device& device, luisa::compu
     };
     auto evaluate_contact = [&]()
     {
+        if (!get_scene_params().use_self_collision)
+            return;
         stream << sim_data->sa_cgB.copy_from(host_sim_data->sa_cgB.data())
                << sim_data->sa_cgA_diag.copy_from(host_sim_data->sa_cgA_diag.data());
 
@@ -3944,13 +2757,10 @@ void NewtonSolver::physics_step_CPU(luisa::compute::Device& device, luisa::compu
     // buffer_copy(host_sim_data->sa_x_step_start, host_sim_data->sa_x_iter_start);
 
     // Init LBVH
+    if (get_scene_params().use_self_collision)
     {
         buffer_upload(stream, host_sim_data->sa_x_step_start, sim_data->sa_x_step_start);
-        lbvh_face->reduce_face_tree_aabb(stream, sim_data->sa_x_step_start, mesh_data->sa_faces);
-        lbvh_edge->reduce_edge_tree_aabb(stream, sim_data->sa_x_step_start, mesh_data->sa_edges);
-        lbvh_face->construct_tree(stream);
-        lbvh_edge->construct_tree(stream);
-        stream << luisa::compute::synchronize();
+        device_construct_lbvh(stream);
     }
     // for (uint substep = 0; substep < get_scene_params().num_substep; substep++)
     {
@@ -3992,17 +2802,35 @@ void NewtonSolver::physics_step_CPU(luisa::compute::Device& device, luisa::compu
 
             if constexpr (true)
             {
-                host_evaluate_inertia();
-
-                host_evaluate_ground_collision();
-
-                host_evaluate_orthogonality();
-
-                host_evaluete_stretch_spring();
-
-                host_evaluete_stretch_face();
-
-                host_evaluete_bending();
+                if (auto* e = get_spring_energy())
+                {
+                    e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
+                if (auto* e = get_stretch_face_energy())
+                {
+                    e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
+                if (auto* e = get_bending_energy())
+                {
+                    e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
+                if (auto* e = get_inertia_energy())
+                {
+                    e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
+                if (auto* e = get_abd_inertia_energy())
+                {
+                    e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
+                if (auto* e = get_abd_ortho_energy())
+                {
+                    e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
+                if (auto* e = get_ground_collision_energy())
+                {
+                    if (get_scene_params().use_floor)
+                        e->host_evaluate(*host_sim_data, *host_mesh_data);
+                }
 
                 host_material_energy_assembly();
 
@@ -4045,6 +2873,10 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
 
     auto update_contact_set = [&]()
     {
+        device_reset_contact_list(stream);
+
+        if (!get_scene_params().use_self_collision)
+            return;
         device_update_contact_list(device, stream);
         narrow_phase_detector->prescan_pervert_adj_list(
             stream, sim_data->sa_vert_affine_bodies_id, host_sim_data->num_verts_soft);
@@ -4057,6 +2889,8 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
     };
     auto evaluate_contact = [&]()
     {
+        if (!get_scene_params().use_self_collision)
+            return;
         narrow_phase_detector->device_perPair_evaluate_gradient_hessian(stream,
                                                                         sim_data->sa_x,
                                                                         sim_data->sa_x_step_start,
@@ -4121,12 +2955,9 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
     const float substep_dt           = lcs::get_scene_params().get_substep_dt();
 
     // Init LBVH
+    if (get_scene_params().use_self_collision)
     {
-        lbvh_face->reduce_face_tree_aabb(stream, sim_data->sa_x_step_start, mesh_data->sa_faces);
-        lbvh_edge->reduce_edge_tree_aabb(stream, sim_data->sa_x_step_start, mesh_data->sa_edges);
-        lbvh_face->construct_tree(stream);
-        lbvh_edge->construct_tree(stream);
-        stream << luisa::compute::synchronize();
+        device_construct_lbvh(stream);
     }
 
     // for (uint substep = 0; substep < get_scene_params().num_substep; substep++)
@@ -4170,52 +3001,61 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
                 auto& soft_inertia = sim_data->get_soft_inertia_data();
                 if (soft_inertia.is_valid())
                 {
-                    stream << fn_evaluate_soft_inertia(soft_inertia, substep_dt).dispatch(soft_inertia.get_num_indices());
+                    get_inertia_energy()->device_evaluate(
+                        stream, soft_inertia, sim_data->sa_q, substep_dt, soft_inertia.get_num_indices());
 
-                    stream << fn_evaluate_soft_ground_collision(soft_inertia,
-                                                                get_scene_params().floor.y,
-                                                                get_scene_params().use_floor,
-                                                                get_scene_params().stiffness_collision,
-                                                                get_scene_params().contact_energy_type)
-                                  .dispatch(host_sim_data->num_verts_soft);
+                    get_ground_collision_energy()->device_compute_energy(stream,
+                                                                         soft_inertia,
+                                                                         get_scene_params().floor.y,
+                                                                         get_scene_params().use_floor,
+                                                                         get_scene_params().stiffness_collision,
+                                                                         get_scene_params().contact_energy_type,
+                                                                         host_sim_data->num_verts_soft);
+
                     stream << fn_material_energy_assembly_soft_inertia(soft_inertia).dispatch(num_dof_soft);
                 }
 
                 const auto& stretch_springs = sim_data->get_stretch_spring_data();
                 if (stretch_springs.is_valid())
                 {
-                    stream << fn_evaluate_spring(stretch_springs).dispatch(stretch_springs.get_num_indices());
+                    get_spring_energy()->device_evaluate(
+                        stream, stretch_springs, sim_data->sa_x, stretch_springs.get_num_indices());
                     stream << fn_material_energy_assembly_stretch_spring(stretch_springs).dispatch(num_dof_soft);
                 }
 
                 const auto& stretch_faces = sim_data->get_stretch_face_data();
                 if (stretch_faces.is_valid())
                 {
-                    stream << fn_evaluate_stretch_face(stretch_faces).dispatch(stretch_faces.get_num_indices());
+                    get_stretch_face_energy()->device_evaluate(
+                        stream, stretch_faces, sim_data->sa_x, stretch_faces.get_num_indices());
                     stream << fn_material_energy_assembly_stretch_face(stretch_faces).dispatch(num_dof_soft);
                 }
 
                 const auto& bending_data = sim_data->get_bending_edge_data();
                 if (bending_data.is_valid())
                 {
-                    stream << fn_evaluate_bending(bending_data, get_scene_params().get_bending_stiffness_scaling())
-                                  .dispatch(bending_data.get_num_indices());
+                    get_bending_energy()->device_evaluate(stream,
+                                                          bending_data,
+                                                          sim_data->sa_x,
+                                                          get_scene_params().get_bending_stiffness_scaling(),
+                                                          bending_data.get_num_indices());
                     stream << fn_material_energy_assembly_bending(bending_data).dispatch(num_dof_soft);
                 }
 
                 const auto& abd_inertia_data = sim_data->get_abd_inertia_data();
                 if (abd_inertia_data.is_valid())
                 {
-                    stream << fn_evaluate_abd_inertia(abd_inertia_data, substep_dt)
-                                  .dispatch(abd_inertia_data.get_num_indices());
+                    get_abd_inertia_energy()->device_evaluate(
+                        stream, abd_inertia_data, sim_data->sa_q, substep_dt, abd_inertia_data.get_num_indices());
 
-                    stream << fn_evaluate_abd_ground_collision(abd_inertia_data,
-                                                               get_scene_params().floor.y,
-                                                               get_scene_params().use_floor,
-                                                               get_scene_params().stiffness_collision,
-                                                               host_sim_data->num_verts_soft,
-                                                               get_scene_params().contact_energy_type)
-                                  .dispatch(host_sim_data->num_verts_rigid);
+                    get_ground_collision_energy()->device_compute_energy(stream,
+                                                                         abd_inertia_data,
+                                                                         get_scene_params().floor.y,
+                                                                         get_scene_params().use_floor,
+                                                                         get_scene_params().stiffness_collision,
+                                                                         host_sim_data->num_verts_soft,
+                                                                         get_scene_params().contact_energy_type,
+                                                                         host_sim_data->num_verts_rigid);
 
                     stream << fn_material_energy_assembly_abd_inertia(abd_inertia_data, num_dof_soft).dispatch(num_dof_rigid);
                 }
@@ -4223,8 +3063,8 @@ void NewtonSolver::physics_step_GPU(luisa::compute::Device& device, luisa::compu
                 const auto& abd_orthogonality_data = sim_data->get_abd_orthogonality_data();
                 if (abd_orthogonality_data.is_valid())
                 {
-                    stream << fn_evaluate_abd_orthogonality(abd_orthogonality_data)
-                                  .dispatch(abd_orthogonality_data.get_num_indices());
+                    get_abd_ortho_energy()->device_evaluate(
+                        stream, abd_orthogonality_data, sim_data->sa_q, abd_orthogonality_data.get_num_indices());
                     stream << fn_material_energy_assembly_abd_ortho(abd_orthogonality_data, num_dof_soft).dispatch(num_dof_rigid);
                 }
 

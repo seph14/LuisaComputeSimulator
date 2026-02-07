@@ -75,21 +75,16 @@ class NewtonSolver : public lcs::SolverInterface
 
     void host_predict_position();
     void host_update_velocity();
-    void host_evaluate_inertia();
-    void host_evaluate_orthogonality();
-    void host_evaluate_ground_collision();
-    void host_evaluate_dirichlet();
     void host_reset_off_diag();
     void host_reset_cgB_cgX_diagA();
-    void host_evaluete_stretch_spring();
-    void host_evaluete_stretch_face();
-    void host_evaluete_bending();
     void host_material_energy_assembly();
     void host_solve_eigen(luisa::compute::Stream& stream);
     void host_SpMV(luisa::compute::Stream& stream, const std::vector<float3>& input_array, std::vector<float3>& output_array);
     void line_search(luisa::compute::Device& device, luisa::compute::Stream& stream, bool& dirichlet_converged, bool& global_converged);
 
     // Device functions
+    void device_reset_contact_list(luisa::compute::Stream& stream);
+    void device_construct_lbvh(luisa::compute::Stream& stream);
     void device_broadphase_ccd(luisa::compute::Stream& stream);
     void device_broadphase_dcd(luisa::compute::Stream& stream);
     void device_narrowphase_ccd(luisa::compute::Stream& stream);
@@ -114,9 +109,10 @@ class NewtonSolver : public lcs::SolverInterface
     template <typename... Args>
     using Shader = luisa::compute::Shader<1, Args...>;
 
-    luisa::compute::Shader<1, luisa::compute::BufferView<float3>>   fn_reset_vector;
-    luisa::compute::Shader<1, luisa::compute::BufferView<float3x3>> fn_reset_float3x3;
-    luisa::compute::Shader<1>                                       fn_reset_cgA_offdiag_triplet;
+    luisa::compute::Shader<1, luisa::compute::BufferView<float>, float> fn_reset_float;
+    luisa::compute::Shader<1, luisa::compute::BufferView<float3>>       fn_reset_vector;
+    luisa::compute::Shader<1, luisa::compute::BufferView<float3x3>>     fn_reset_float3x3;
+    luisa::compute::Shader<1>                                           fn_reset_cgA_offdiag_triplet;
 
     luisa::compute::Shader<1, float, float3> fn_predict_position;  // const Float substep_dt
     luisa::compute::Shader<1, float, bool, float> fn_update_velocity;  // const Float substep_dt, const Bool fix_scene, const Float damping

@@ -105,18 +105,12 @@ namespace lcs
 				fixed_point_animations.push_back(fixed_info);
 			}
 		}
-		WorldData& WorldData::load_fixed_points()
+		WorldData& WorldData::add_fixed_point_info(const MakeFixedPointsInterface& fixed_point_func)
 		{
-			if (input_mesh.model_positions.size() == 0)
-			{
-				load_mesh_data();
-			}
-
 			auto from_norm_position = [&](const std::function<bool(const float3&)>& func,
 										  const FixedPointAnimationInfo&			info = FixedPointAnimationInfo())
 			{ set_pinned_verts_from_norm_position(func, info); };
 
-			for (const auto& fixed_point_func : fixed_point_range_info)
 			{
 				const auto& range = fixed_point_func.range;
 				if (fixed_point_func.method == FixedPointsType::All)
@@ -127,109 +121,109 @@ namespace lcs
 				}
 				else if (fixed_point_func.method == FixedPointsType::Left)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::Right)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::Front)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.z < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::Back)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.z > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::Up)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.y > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::Down)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.y < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::LeftUp)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x < range && norm_pos.y > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::LeftDown)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x < range && norm_pos.y < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::LeftFront)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x < range && norm_pos.z > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::LeftBack)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x < range && norm_pos.z < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::RightUp)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x > 1.0f - range && norm_pos.y > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::RightDown)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x > 1.0f - range && norm_pos.y < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::RightFront)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x > 1.0f - range && norm_pos.z > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::RightBack)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.x > 1.0f - range && norm_pos.z < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::FrontUp)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.z < range && norm_pos.y > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::FrontDown)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.z < range && norm_pos.y < range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::BackUp)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.z > 1.0f - range && norm_pos.y > 1.0f - range; },
 						fixed_point_func.fixed_info);
 				}
 				else if (fixed_point_func.method == FixedPointsType::BackDown)
 				{
-					from_norm_position([range = fixed_point_func.range.front()](const float3& norm_pos)
+					from_norm_position([range = fixed_point_func.range](const float3& norm_pos)
 						{ return norm_pos.z > 1.0f - range && norm_pos.y < range; },
 						fixed_point_func.fixed_info);
 				}
@@ -245,14 +239,14 @@ namespace lcs
 				}
 				else
 				{
-					LUISA_ERROR("Unsupported FixedPointsType {} in ShellInfo::load_fixed_points().",
+					LUISA_ERROR("Unsupported FixedPointsType {} in provided fix point info.",
 						int(fixed_point_func.method));
 				}
 			}
 
 			return *this;
 		}
-		void WorldData::get_vertex_animations(const float time, std::vector<Animation::PerVertexAnimation>& fixed_point_target_positions)
+		void WorldData::update_default_vertex_animations(const float time, std::vector<Animation::PerVertexAnimation>& fixed_point_target_positions)
 		{
 			fixed_point_target_positions.resize(fixed_point_indices.size());
 			for (uint index = 0; index < fixed_point_indices.size(); index++)
@@ -350,7 +344,7 @@ namespace lcs
 					shell_info.load_mesh_data();
 				}
 
-				if (shell_info.simulation_type == SimulationTypeCloth)
+				if (shell_info.simulation_type == SimulationType::Cloth)
 				{
 					if (!shell_info.holds<ClothMaterial>())
 					{
@@ -359,7 +353,7 @@ namespace lcs
 					auto& mat = shell_info.get_material<ClothMaterial>();
 					mat.is_shell = true; // Cloth material must be shell
 				}
-				else if (shell_info.simulation_type == SimulationTypeTetrahedral)
+				else if (shell_info.simulation_type == SimulationType::Tetrahedral)
 				{
 					if (!shell_info.holds<TetMaterial>())
 					{
@@ -368,7 +362,7 @@ namespace lcs
 					auto& mat = shell_info.get_material<TetMaterial>();
 					mat.is_shell = false;
 				}
-				else if (shell_info.simulation_type == SimulationTypeRigid)
+				else if (shell_info.simulation_type == SimulationType::Rigid)
 				{
 					if (!shell_info.holds<RigidMaterial>())
 					{
@@ -396,7 +390,7 @@ namespace lcs
 						mat.thickness = 0.0f;
 					}
 				}
-				else if (shell_info.simulation_type == SimulationTypeRod)
+				else if (shell_info.simulation_type == SimulationType::Rod)
 				{
 					if (!shell_info.holds<RodMaterial>())
 					{
@@ -875,7 +869,7 @@ namespace lcs
 					{
 						if (shell_info.input_mesh.tetrahedrons.empty())
 						{
-							if (shell_info.simulation_type == SimulationTypeTetrahedral)
+							if (shell_info.simulation_type == SimulationType::Tetrahedral)
 							{
 								LUISA_ERROR("Mesh {} is set as Tetrahedral type but has no tetrahedron elements!", meshIdx);
 							}

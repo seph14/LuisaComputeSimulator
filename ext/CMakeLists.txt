@@ -6,7 +6,7 @@ if (NOT TARGET luisa::compute)
     FetchContent_Declare(
         luisa_compute
         GIT_REPOSITORY https://github.com/LuisaGroup/LuisaCompute.git # https://gitee.com/celeste-huohuo/LuisaCompute.git
-        GIT_TAG bf794dce070bfa78b0b86e282cd9ebed85690e00
+        GIT_TAG 0e641eb8667c3d3ce0e3c9ecb709de9f22363d4e
         # GIT_TAG next
         # GIT_SUBMODULES ""
         SOURCE_DIR ${CMAKE_SOURCE_DIR}/ext/luisaCompute
@@ -69,6 +69,27 @@ if(LCS_ENABLE_GUI)
     endif()
 endif()
 
+
+if (LCS_BUILD_PYBINDINGS)
+
+    set(PYBIND11_PYTHON_EXECUTABLE ${LCS_PYTHON_EXECUTABLE} CACHE FILEPATH "Python executable for pybind11" FORCE)
+    message(STATUS "Python binding executable path: ${PYBIND11_PYTHON_EXECUTABLE}")
+
+    # find_package(pybind11 QUIET)
+    # if(pybind11_FOUND)
+    #     message(STATUS "Found pybind11: ${pybind11_DIR}")
+    # else()
+        # message(STATUS "pybind11 not found; fetching pybind11 via FetchContent...")
+        # Using a specific commit of pybind11 to ensure stability
+        FetchContent_Declare(
+            pybind11
+            GIT_REPOSITORY https://github.com/pybind/pybind11.git
+            GIT_TAG v2.11.1
+            SOURCE_DIR ${EXT_PATH}/pybind11
+        )
+        FetchContent_MakeAvailable(pybind11)
+    # endif()
+endif()
 
 if (LCS_USE_SYSTEM_PARALLEL_FOR)
     target_compile_definitions(luisa-compute-solver-lib PRIVATE LCS_USE_SYSTEM_PARALLEL_FOR=1)

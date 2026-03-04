@@ -24,25 +24,22 @@ namespace Demo::Simulation
 	{
 		WorldData& up = shell_list.emplace_back(WorldData())
 							.set_name("upper square")
-							.set_simulation_type(lcs::Initializer::SimulationTypeCloth)
+							.set_simulation_type(lcs::Initializer::SimulationType::Cloth)
 							.load_mesh_from_path(obj_mesh_path + "square2.obj")
 							.set_physics_material(ClothMaterial{ .thickness = 0.1f })
-							.add_fixed_point_info({ .method = lcs::Initializer::FixedPointsType::LeftBack })
-							.load_fixed_points();
+							.add_fixed_point_info({ .method = lcs::Initializer::FixedPointsType::LeftBack });
 
 		WorldData& down = shell_list.emplace_back(WorldData())
 							  .set_name("lower square")
-							  .set_simulation_type(lcs::Initializer::SimulationTypeCloth)
+							  .set_simulation_type(lcs::Initializer::SimulationType::Cloth)
 							  .load_mesh_from_path(obj_mesh_path + "square2.obj")
 							  .set_physics_material(ClothMaterial{ .thickness = 0.1f })
 							  .add_fixed_point_info({ .method = lcs::Initializer::FixedPointsType::Left })
-							  .add_fixed_point_info({ .method = lcs::Initializer::FixedPointsType::Right })
-							  .load_fixed_points();
+							  .add_fixed_point_info({ .method = lcs::Initializer::FixedPointsType::Right });
 
 		lcs::get_scene_params().use_floor = false;
 		lcs::get_scene_params().implicit_dt = 0.2;
 		lcs::get_scene_params().use_energy_linesearch = true;
-		lcs::get_scene_params().stiffness_DAB_bending = 200.0f;
 		lcs::get_scene_params().use_gpu = false;
 	}
 
@@ -311,6 +308,10 @@ namespace Demo::Simulation
 					}
 				}
 
+				// load mesh
+				if (!info.input_mesh.model_positions.empty())
+					info.load_mesh_data();
+
 				// translation / rotation / scale
 				yyjson_val* t = yyjson_obj_get(shell_val, "translation");
 				if (t && yyjson_is_arr(t) && yyjson_get_len(t) >= 3)
@@ -366,13 +367,13 @@ namespace Demo::Simulation
 				{
 					const char* ss = yyjson_get_str(stype);
 					if (strcmp(ss, "Rigid") == 0)
-						info.set_simulation_type(lcs::Initializer::SimulationTypeRigid);
+						info.set_simulation_type(lcs::Initializer::SimulationType::Rigid);
 					else if (strcmp(ss, "Tetrahedral") == 0)
-						info.set_simulation_type(lcs::Initializer::SimulationTypeTetrahedral);
+						info.set_simulation_type(lcs::Initializer::SimulationType::Tetrahedral);
 					else if (strcmp(ss, "Rod") == 0)
-						info.set_simulation_type(lcs::Initializer::SimulationTypeRod);
+						info.set_simulation_type(lcs::Initializer::SimulationType::Rod);
 					else
-						info.set_simulation_type(lcs::Initializer::SimulationTypeCloth);
+						info.set_simulation_type(lcs::Initializer::SimulationType::Cloth);
 				}
 
 				// set physical material
@@ -413,12 +414,12 @@ namespace Demo::Simulation
 						auto material_to_shell = [&](const std::string& s)
 						{
 							if (s == "Rigid")
-								return lcs::Initializer::SimulationTypeRigid;
+								return lcs::Initializer::SimulationType::Rigid;
 							else if (s == "Tetrahedral" || s == "Tet" || s == "TetMaterial")
-								return lcs::Initializer::SimulationTypeTetrahedral;
+								return lcs::Initializer::SimulationType::Tetrahedral;
 							else if (s == "Rod")
-								return lcs::Initializer::SimulationTypeRod;
-							return lcs::Initializer::SimulationTypeCloth;
+								return lcs::Initializer::SimulationType::Rod;
+							return lcs::Initializer::SimulationType::Cloth;
 						};
 
 						// Parse and fill material struct based on material_type
@@ -499,7 +500,7 @@ namespace Demo::Simulation
 							// if shell_type not provided explicitly, set from material
 							if (stype == nullptr)
 							{
-								info.set_simulation_type(lcs::Initializer::SimulationTypeCloth);
+								info.set_simulation_type(lcs::Initializer::SimulationType::Cloth);
 							}
 							else
 							{
@@ -534,7 +535,7 @@ namespace Demo::Simulation
 							info.set_physics_material(mat);
 							if (stype == nullptr)
 							{
-								info.set_simulation_type(lcs::Initializer::SimulationTypeTetrahedral);
+								info.set_simulation_type(lcs::Initializer::SimulationType::Tetrahedral);
 							}
 							else
 							{
@@ -574,7 +575,7 @@ namespace Demo::Simulation
 							info.set_physics_material(mat);
 							if (stype == nullptr)
 							{
-								info.set_simulation_type(lcs::Initializer::SimulationTypeRigid);
+								info.set_simulation_type(lcs::Initializer::SimulationType::Rigid);
 							}
 							else
 							{
@@ -614,7 +615,7 @@ namespace Demo::Simulation
 							info.set_physics_material(mat);
 							if (stype == nullptr)
 							{
-								info.set_simulation_type(lcs::Initializer::SimulationTypeRod);
+								info.set_simulation_type(lcs::Initializer::SimulationType::Rod);
 							}
 							else
 							{
@@ -635,7 +636,7 @@ namespace Demo::Simulation
 
 							info.set_physics_material(mat);
 							if (stype == nullptr)
-								info.set_simulation_type(lcs::Initializer::SimulationTypeCloth);
+								info.set_simulation_type(lcs::Initializer::SimulationType::Cloth);
 						}
 					}
 				}
@@ -657,17 +658,9 @@ namespace Demo::Simulation
 							mfp.method = parse_fixed_method(yyjson_get_str(mth));
 						// range
 						yyjson_val* rng = yyjson_obj_get(fpv, "range");
-						if (rng && yyjson_is_arr(rng))
-						{
-							yyjson_val* ev;
-							size_t		ri, rmax;
-							mfp.range.clear();
-							yyjson_arr_foreach(rng, ri, rmax, ev)
-							{
-								if (yyjson_is_num(ev))
-									mfp.range.push_back(static_cast<float>(yyjson_get_num(ev)));
-							}
-						}
+						if (rng && yyjson_is_num(rng))
+							mfp.range = static_cast<float>(yyjson_get_num(rng));
+
 						// fixed_info (animation)
 						yyjson_val* fin = yyjson_obj_get(fpv, "fixed_info");
 						if (fin && yyjson_is_obj(fin))
@@ -757,17 +750,12 @@ namespace Demo::Simulation
 								fi.use_setting_position = true;
 							}
 						}
-
-						info.fixed_point_range_info.push_back(mfp);
+						info.add_fixed_point_info(mfp);
 					}
 				}
 
 				// finally add to shell_list and load mesh (and fixed points if provided)
-				shell_list.emplace_back(info);
-				if (!shell_list.back().input_mesh.model_positions.empty())
-					shell_list.back().load_mesh_data();
-				if (!shell_list.back().fixed_point_range_info.empty())
-					shell_list.back().load_fixed_points();
+				auto& curr_body = shell_list.emplace_back(info);
 			}
 		}
 

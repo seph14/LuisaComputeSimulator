@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/affine_position.h"
 #include "MeshOperation/mesh_reader.h"
 #include "SimulationCore/base_mesh.h"
 #include "SimulationCore/physical_material.h"
@@ -97,16 +98,17 @@ namespace lcs
 		{
 			FixedPointsType			method = FixedPointsType::All;
 			FixedPointAnimationInfo fixed_info;
-			std::vector<float>		range = { 0.001f };
+			float					range = 0.001f;
 			void*					data_ptr = nullptr;
 		};
 
-		enum SimulationType
+		enum class SimulationType
 		{
-			SimulationTypeCloth,
-			SimulationTypeTetrahedral,
-			SimulationTypeRigid,
-			SimulationTypeRod,
+			None,
+			Cloth,
+			Tetrahedral,
+			Rigid,
+			Rod,
 		};
 
 		struct WorldData
@@ -118,11 +120,10 @@ namespace lcs
 
 			MaterialVariant physics_material; // Maybe we can use Polymorphism
 
-			std::vector<MakeFixedPointsInterface> fixed_point_range_info;
-			std::vector<uint>					  fixed_point_indices;
-			std::vector<FixedPointAnimationInfo>  fixed_point_animations;
+			std::vector<uint>					 fixed_point_indices;
+			std::vector<FixedPointAnimationInfo> fixed_point_animations;
 
-			SimulationType			  simulation_type = SimulationTypeCloth;
+			SimulationType			  simulation_type = SimulationType::Cloth;
 			SimMesh::TriangleMeshData input_mesh;
 
 			template <typename T>
@@ -143,7 +144,7 @@ namespace lcs
 
 			WorldData()
 				: model_name("sim_object")
-				, simulation_type(SimulationTypeCloth)
+				, simulation_type(SimulationType::None)
 			{
 			}
 			WorldData(const std::string& model_name, const SimulationType& mesh_type)
@@ -161,11 +162,7 @@ namespace lcs
 				this->simulation_type = sim_type;
 				return *this;
 			}
-			WorldData& add_fixed_point_info(const MakeFixedPointsInterface& info)
-			{
-				this->fixed_point_range_info.emplace_back(info);
-				return *this;
-			}
+			WorldData& add_fixed_point_info(const MakeFixedPointsInterface& info);
 			WorldData& load_mesh_data();
 			WorldData& load_mesh_from_path(const std::string& path);
 
@@ -203,6 +200,20 @@ namespace lcs
 			{
 				this->scale = luisa::make_float3(s);
 				return *this;
+			}
+			float3 get_rest_position(const float3& model_pos) const
+			{
+				float4x4 model_matrix = lcs::make_model_matrix(translation, rotation, scale);
+				return lcs::affine_position(model_matrix, model_pos);
+			}
+			float3 get_rest_position(const uint local_vid) const
+			{
+				if (local_vid >= input_mesh.model_positions.size())
+				{
+					throw std::runtime_error("Vertex ID out of range in get_rest_position");
+				}
+				const auto model_pos = input_mesh.model_positions[local_vid];
+				return get_rest_position(luisa::make_float3(model_pos[0], model_pos[1], model_pos[2]));
 			}
 			WorldData& set_physics_material(const MaterialVariant& mat)
 			{
@@ -278,8 +289,6 @@ namespace lcs
 				return std::filesystem::path(model_name).filename().string();
 			}
 
-			WorldData& load_fixed_points();
-
 			void set_pinned_verts_from_norm_position(const std::function<bool(const float3&)>& func,
 				const FixedPointAnimationInfo&												   info = FixedPointAnimationInfo());
 			void set_pinned_verts_from_functions(const std::function<bool(uint)>& func,
@@ -288,7 +297,7 @@ namespace lcs
 				const FixedPointAnimationInfo&							info = FixedPointAnimationInfo());
 			void set_pinned_vert_fixed_info(const uint vid, const FixedPointAnimationInfo& info);
 
-			void get_vertex_animations(const float time, std::vector<Animation::PerVertexAnimation>& vertex_animations);
+			void update_default_vertex_animations(const float time, std::vector<Animation::PerVertexAnimation>& vertex_animations);
 			// void get_body_animation(const float time, Animation::PerBodyAnimation& body_animation);
 			void get_rest_positions(std::vector<std::array<float, 3>>& rest_positions);
 		};

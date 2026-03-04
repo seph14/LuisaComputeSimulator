@@ -1,7 +1,60 @@
 #include "MeshOperation/mesh_reader.h"
+#include <cstdint>
 #include <filesystem>
 #include <istream>
 #include <sstream>
+#include <algorithm>
+#include "Utils/cpu_parallel.h"
+
+namespace NotParallel
+{
+	using Index = uint32_t;
+
+	template <typename Func>
+	static void parallel_for(Index start, Index end, Func f)
+	{
+		for (Index i = start; i < end; ++i)
+			f((Index)i);
+	}
+
+	template <typename It, typename Comp>
+	static void parallel_sort(It begin, It end, Comp comp)
+	{
+		std::sort(begin, end, comp);
+	}
+
+	template <typename Pred, typename OutFunc>
+	static void parallel_for_and_scan(Index start, Index end, Pred pred, OutFunc out, unsigned int /*init*/ = 0u)
+	{
+		unsigned int count = 0u;
+		for (Index i = start; i < end; ++i)
+		{
+			auto curr = pred(i);
+			if (curr)
+			{
+				unsigned int prefix = count + 1u;
+				out(i, prefix, curr);
+				count += curr;
+			}
+		}
+	}
+
+	template <typename T, typename Func>
+	static T parallel_for_and_reduce_sum(Index start, Index end, Func f)
+	{
+		T sum{};
+		for (Index i = start; i < end; ++i)
+			sum += f(i);
+		return sum;
+	}
+
+	template <typename Func>
+	static void single_thread_for(Index start, Index end, Func f)
+	{
+		for (Index i = start; i < end; ++i)
+			f(i);
+	}
+} // namespace NotParallel
 
 namespace SimMesh
 {
@@ -38,7 +91,7 @@ namespace SimMesh
 			std::sort(tmp, tmp + 4);
 			return Int4{ tmp[0], tmp[1], tmp[2], tmp[3] };
 		};
-		CpuParallel::parallel_for(0,
+		NotParallel::parallel_for(0,
 			num_tets,
 			[&](uint tid)
 			{
@@ -67,7 +120,7 @@ namespace SimMesh
 				return temp < 0;
 			});
 		std::vector<uchar> list_face_type(tmp_tets.size(), 0);
-		CpuParallel::parallel_for(0,
+		NotParallel::parallel_for(0,
 			tmp_tets.size(),
 			[&](const uint i)
 			{
@@ -142,7 +195,7 @@ namespace SimMesh
 				return Int3{ v1, v2, v3 }; // Correct order
 		};
 
-		CpuParallel::parallel_for_and_scan(
+		NotParallel::parallel_for_and_scan(
 			0,
 			tmp_tets.size(),
 			[&](const uint i)
@@ -178,11 +231,11 @@ namespace SimMesh
 
 		std::vector<bool> is_surface_vert(num_verts, false);
 
-		uint num_surface_verts = CpuParallel::parallel_for_and_reduce_sum<uint>(
+		uint num_surface_verts = NotParallel::parallel_for_and_reduce_sum<uint>(
 			0, num_verts, [&](const uint vid)
 			{ return list_vert_is_on_surface[vid] ? 1 : 0; });
 		surface_verts.resize(num_surface_verts);
-		CpuParallel::parallel_for_and_scan(
+		NotParallel::parallel_for_and_scan(
 			0,
 			num_verts,
 			[&](const uint vid)
@@ -197,7 +250,7 @@ namespace SimMesh
 			},
 			0u);
 
-		CpuParallel::single_thread_for(0,
+		NotParallel::single_thread_for(0,
 			num_tets,
 			[&](uint tid)
 			{
@@ -228,7 +281,7 @@ namespace SimMesh
 			std::sort(tmp, tmp + 3);
 			return Int3{ tmp[0], tmp[1], tmp[2] };
 		};
-		CpuParallel::parallel_for(0,
+		NotParallel::parallel_for(0,
 			num_surface_faces,
 			[&](const uint fid)
 			{
@@ -238,7 +291,7 @@ namespace SimMesh
 				tmp_faces[3 * fid + 1] = Int3{ face[0], face[2], fid };
 				tmp_faces[3 * fid + 2] = Int3{ face[1], face[2], fid };
 			});
-		CpuParallel::parallel_sort(tmp_faces.begin(),
+		NotParallel::parallel_sort(tmp_faces.begin(),
 			tmp_faces.end(),
 			[](const Int3& left, const Int3& right)
 			{
@@ -253,7 +306,7 @@ namespace SimMesh
 				return temp < 0;
 			});
 		std::vector<uchar> list_edge_type(tmp_faces.size(), 0);
-		CpuParallel::parallel_for(0,
+		NotParallel::parallel_for(0,
 			tmp_faces.size(),
 			[&](const uint i)
 			{
@@ -284,7 +337,7 @@ namespace SimMesh
 		output_edges.resize(num_edges);
 		output_bending_edges.resize(num_bending_edges);
 
-		CpuParallel::parallel_for_and_scan(
+		NotParallel::parallel_for_and_scan(
 			0,
 			tmp_faces.size(),
 			[&](const uint i)
@@ -312,7 +365,7 @@ namespace SimMesh
 
 		if (extract_bending_edge)
 		{
-			CpuParallel::parallel_for_and_scan(
+			NotParallel::parallel_for_and_scan(
 				0,
 				tmp_faces.size(),
 				[&](const uint i)
@@ -349,11 +402,11 @@ namespace SimMesh
 		}
 	}
 
-	bool read_mesh_file(std::string_view mesh_name, TriangleMeshData& mesh_data)
+	bool read_mesh_file(std::string_view obj_path, TriangleMeshData& mesh_data)
 	{
 		std::string err, warn;
 
-		std::string full_path{ mesh_name };
+		std::string full_path{ obj_path };
 
 		std::string mtl_path = std::filesystem::path(full_path).replace_extension(".mtl").string();
 
@@ -392,7 +445,7 @@ namespace SimMesh
 		mesh_data.material_ids.reserve(num_faces);
 		mesh_data.material_names.reserve(material.size());
 
-		CpuParallel::parallel_for(0,
+		NotParallel::parallel_for(0,
 			num_verts,
 			[&](const uint vid)
 			{
@@ -411,7 +464,7 @@ namespace SimMesh
 			mesh_data.uv_positions.resize(num_uvs);
 			mesh_data.uv_to_vert_map.resize(num_uvs);
 
-			CpuParallel::parallel_for(0,
+			NotParallel::parallel_for(0,
 				num_uvs,
 				[&](const uint vid)
 				{
@@ -670,20 +723,11 @@ namespace SimMesh
 	}
 
 	// template<typename Vert, typename Face>
-	bool saveToOBJ_combined(std::vector<std::vector<Float3>> const& sa_rendering_vertices,
-		std::vector<std::vector<Int3>> const&						sa_rendering_faces,
-		std::string_view											addition_path,
-		std::string_view											addition_str,
-		const uint													frame)
+	bool saveToOBJ_combined(const std::vector<std::vector<Float3>>& sa_rendering_vertices,
+		const std::vector<std::vector<Int3>>&						sa_rendering_faces,
+		const std::string&											full_path)
 	{
-		std::string filename = std::string("frame_") + std::to_string(frame);
-		filename += addition_str;
-		filename += ".obj";
-		std::string full_directory(LCSV_RESOURCE_PATH);
-		full_directory += "/OutputMesh/";
-		full_directory += addition_path;
-		full_directory += "/";
-		std::string full_path = full_directory + filename;
+		std::string full_directory = std::filesystem::path(full_path).parent_path().string();
 
 		// Ensure the directory exists
 		{
@@ -693,11 +737,11 @@ namespace SimMesh
 				try
 				{
 					std::filesystem::create_directories(dir_path);
-					std::cout << "Created directory: " << dir_path << std::endl;
+					LUISA_INFO("Created directory: {}", dir_path.string());
 				}
 				catch (const std::filesystem::filesystem_error& e)
 				{
-					std::cerr << "Error creating directory: " << e.what() << std::endl;
+					LUISA_ERROR("Failed to create directory: {}", dir_path.string());
 					return false;
 				}
 			}
@@ -730,13 +774,13 @@ namespace SimMesh
 			}
 
 			file.close();
-			std::cout << "OBJ file saved: " << full_path << std::endl;
+			LUISA_INFO("OBJ file saved: {}", full_path);
 
 			return true;
 		}
 		else
 		{
-			std::cerr << "Unable to open file: " << full_path << std::endl;
+			LUISA_ERROR("Unable to open file: {}", full_path);
 			return false;
 		}
 	}

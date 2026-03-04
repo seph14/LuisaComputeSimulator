@@ -67,6 +67,9 @@ namespace lcs
 		SolverInterface() {}
 		~SolverInterface() {}
 
+	private:
+		void init_animation(const std::vector<lcs::Initializer::WorldData>& world_data);
+
 	protected:
 		void init_data(luisa::compute::Device&		  device,
 			luisa::compute::Stream&					  stream,
@@ -99,6 +102,8 @@ namespace lcs
 		SolverData	 solver_data;
 		SolverHelper solver_helper;
 
+		// TODO: Impl with vector
+		std::unordered_map<uint, uint>			   vid_to_animation_idx_map;
 		std::vector<Animation::PerVertexAnimation> per_vertex_animations;
 		std::vector<Animation::PerBodyAnimation>   per_body_animations;
 
@@ -163,6 +168,9 @@ namespace lcs
 		//     float,
 		//     float
 		//     >  fn_compute_repulsion_energy_from_ee;
+
+	protected:
+		luisa::fiber::scheduler scheduler;
 	};
 
 } // namespace lcs

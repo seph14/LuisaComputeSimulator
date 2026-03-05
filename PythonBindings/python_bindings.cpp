@@ -18,153 +18,6 @@ namespace py = pybind11;
 using namespace lcs;
 using namespace lcs::Initializer;
 
-// Global state for luisa device/context created from Python.
-// Supports two modes:
-//   - Owned:    created by device_init(), resources released by cleanup()
-//   - Borrowed: set by device_set(), caller retains ownership
-struct GlobalState
-{
-	// Owned resources (only populated when we create them ourselves)
-	std::unique_ptr<luisa::compute::Context> owned_context;
-	std::unique_ptr<luisa::compute::Device>	 owned_device;
-	std::unique_ptr<luisa::compute::Stream>	 owned_stream;
-
-	// Active pointers (always valid when initialized == true;
-	// point to owned_* or external objects depending on mode)
-	luisa::compute::Device* device = nullptr;
-	luisa::compute::Stream* stream = nullptr;
-
-	bool initialized = false;
-	bool owns_resources = false;
-
-	void cleanup()
-	{
-		device = nullptr;
-		stream = nullptr;
-		if (owns_resources)
-		{
-			owned_stream.reset();
-			owned_device.reset();
-			owned_context.reset();
-		}
-		initialized = false;
-		owns_resources = false;
-	}
-} g_state;
-
-static void global_set_device(luisa::compute::Device* device, luisa::compute::Stream* stream)
-{
-	if (g_state.initialized)
-		g_state.cleanup();
-
-	g_state.device = device;
-	g_state.stream = stream;
-	g_state.initialized = true;
-}
-
-// Create a luisa device/stream owned by this module, with optional backend and binary path arguments.
-static void global_create_device(py::object backend_name_obj = py::none(), py::object binary_path_obj = py::none())
-{
-	if (g_state.initialized)
-		return;
-
-	// determine binary path
-	std::string binary_path;
-	if (!binary_path_obj.is_none())
-	{
-		binary_path = binary_path_obj.cast<std::string>();
-	}
-	else
-	{
-		try
-		{
-			// try to get this module file path
-			py::module_ self = py::module_::import("lcs_py");
-			if (py::hasattr(self, "__file__"))
-			{
-				binary_path = self.attr("__file__").cast<std::string>();
-			}
-		}
-		catch (...)
-		{
-		}
-		if (binary_path.empty())
-		{
-#if defined(__APPLE__)
-			// fallback to empty; luisa::compute may still accept an empty path
-			binary_path = "";
-#else
-			binary_path = "";
-#endif
-		}
-	}
-
-	// create context
-	LUISA_INFO("Creating luisa compute context/device/stream from Python...");
-	LUISA_INFO("  binary path: {}", binary_path);
-	g_state.owned_context = std::make_unique<luisa::compute::Context>(binary_path);
-
-	// choose backend
-	std::string backend;
-	if (!backend_name_obj.is_none())
-		backend = backend_name_obj.cast<std::string>();
-	else
-	{
-#if defined(__APPLE__)
-		backend = "metal";
-#elif defined(_WIN32)
-		backend = "dx";
-#else
-		backend = "cuda";
-#endif
-	}
-
-	luisa::vector<luisa::string> device_names = g_state.owned_context->backend_device_names(backend);
-	if (device_names.empty())
-	{
-		LUISA_WARNING("No hardware device found.");
-		exit(1);
-	}
-	for (size_t i = 0; i < device_names.size(); ++i)
-	{
-		LUISA_INFO("Device {}: {}", i, device_names[i]);
-	}
-
-	// create device (use default flags)
-	try
-	{
-		auto dev = g_state.owned_context->create_device(backend, nullptr, true);
-		g_state.owned_device = std::make_unique<luisa::compute::Device>(std::move(dev));
-		auto st = g_state.owned_device->create_stream(luisa::compute::StreamTag::COMPUTE);
-		g_state.owned_stream = std::make_unique<luisa::compute::Stream>(std::move(st));
-
-		global_set_device(g_state.owned_device.get(), g_state.owned_stream.get());
-		g_state.owns_resources = true;
-	}
-	catch (const std::exception& e)
-	{
-		throw std::runtime_error(std::string("Failed to create luisa device: ") + e.what());
-	}
-}
-
-// Use an existing device/stream from another module (non-owning).
-// The caller must ensure that the passed-in objects outlive this module's usage.
-static void global_set_device_from_pointers(uintptr_t device_ptr, uintptr_t stream_ptr)
-{
-	if (device_ptr == 0 || stream_ptr == 0)
-		throw std::runtime_error("device_ptr and stream_ptr must be non-null");
-
-	auto* device = reinterpret_cast<luisa::compute::Device*>(device_ptr);
-	auto* stream = reinterpret_cast<luisa::compute::Stream*>(stream_ptr);
-	global_set_device(device, stream);
-	g_state.owns_resources = false;
-}
-
-static void global_free_device()
-{
-	g_state.cleanup();
-}
-
 // Helper wrapper to hold WorldData pointer and expose chainable methods
 struct WorldDataWrapper
 {
@@ -213,16 +66,20 @@ struct WorldDataWrapper
 		wd->set_name(name);
 		return *this;
 	}
-	WorldDataWrapper& set_simulation_type(lcs::Initializer::SimulationType t)
+	WorldDataWrapper& set_simulation_type(lcs::Initializer::MaterialType t)
 	{
-		wd->set_simulation_type(t);
+		wd->set_material_type(t);
 		return *this;
 	}
 
 	// Expose cloth material setter by accepting keyword args
-	WorldDataWrapper& set_physics_material_cloth(float thickness = 1e-3f, float youngs_modulus = 1e6f, float poisson_ratio = 0.35f, float area_bending_stiffness = 5e-3f)
+	WorldDataWrapper& set_physics_material_cloth(
+		float thickness = ClothMaterial::default_thickness(),
+		float youngs_modulus = ClothMaterial::default_youngs_modulus(),
+		float poisson_ratio = ClothMaterial::default_poisson_ratio(),
+		float area_bending_stiffness = ClothMaterial::default_area_bending_stiffness())
 	{
-		wd->set_simulation_type(lcs::Initializer::SimulationType::Cloth);
+		wd->set_material_type(lcs::Initializer::MaterialType::Cloth);
 		ClothMaterial mat;
 		mat.thickness = thickness;
 		mat.youngs_modulus = youngs_modulus;
@@ -233,9 +90,13 @@ struct WorldDataWrapper
 	}
 
 	// Expose tetrahedral material setter
-	WorldDataWrapper& set_physics_material_tet(float youngs_modulus = 1e6f, float poisson_ratio = 0.35f, float density = 1e3f, float mass = 0.0f)
+	WorldDataWrapper& set_physics_material_tet(
+		float youngs_modulus = TetMaterial::default_youngs_modulus(),
+		float poisson_ratio = TetMaterial::default_poisson_ratio(),
+		float density = TetMaterial::default_density(),
+		float mass = TetMaterial::default_mass())
 	{
-		wd->set_simulation_type(lcs::Initializer::SimulationType::Tetrahedral);
+		wd->set_material_type(lcs::Initializer::MaterialType::Tetrahedral);
 		TetMaterial mat;
 		mat.youngs_modulus = youngs_modulus;
 		mat.poisson_ratio = poisson_ratio;
@@ -247,9 +108,13 @@ struct WorldDataWrapper
 	}
 
 	// Expose rigid material setter
-	WorldDataWrapper& set_physics_material_rigid(float thickness = 1e-3f, float stiffness = 1e6f, float density = 1e3f, float mass = 0.0f)
+	WorldDataWrapper& set_physics_material_rigid(
+		float thickness = RigidMaterial::default_thickness(),
+		float stiffness = RigidMaterial::default_stiffness(),
+		float density = RigidMaterial::default_density(),
+		float mass = RigidMaterial::default_mass())
 	{
-		wd->set_simulation_type(lcs::Initializer::SimulationType::Rigid);
+		wd->set_material_type(lcs::Initializer::MaterialType::Rigid);
 		RigidMaterial mat;
 		mat.thickness = thickness;
 		mat.stiffness = stiffness;
@@ -260,9 +125,14 @@ struct WorldDataWrapper
 	}
 
 	// Expose rod material setter
-	WorldDataWrapper& set_physics_material_rod(float radius = 1e-3f, float bending_stiffness = 1e4f, float twisting_stiffness = 1e4f, float density = 1e3f, float mass = 0.0f)
+	WorldDataWrapper& set_physics_material_rod(
+		float radius = RodMaterial::default_radius(),
+		float bending_stiffness = RodMaterial::default_bending_stiffness(),
+		float twisting_stiffness = RodMaterial::default_twisting_stiffness(),
+		float density = RodMaterial::default_density(),
+		float mass = RodMaterial::default_mass())
 	{
-		wd->set_simulation_type(lcs::Initializer::SimulationType::Rod);
+		wd->set_material_type(lcs::Initializer::MaterialType::Rod);
 		RodMaterial mat;
 		mat.radius = radius;
 		mat.bending_stiffness = bending_stiffness;
@@ -323,12 +193,20 @@ struct WorldDataWrapper
 		wd->set_scale(s);
 		return *this;
 	}
+
+	std::string get_name() const
+	{
+		return wd->get_model_name();
+	}
+	uint get_registration_index() const
+	{
+		return wd->get_registration_index();
+	}
 };
 
 // Python-facing Newton-like builder that stores a vector<WorldData>
 struct PyNewtonBuilder
 {
-	std::vector<WorldData>			   shell_list;
 	std::unique_ptr<lcs::NewtonSolver> solver_ptr;
 
 	PyNewtonBuilder()
@@ -337,7 +215,7 @@ struct PyNewtonBuilder
 	}
 
 	// register_mesh accepts numpy arrays (vertices Nx3, triangles Mx3)
-	WorldDataWrapper register_mesh(const std::string&				   name,
+	WorldDataWrapper register_mesh_from_array(const std::string&	   name,
 		py::array_t<double, py::array::c_style | py::array::forcecast> vertices,
 		py::array_t<int, py::array::c_style | py::array::forcecast>	   triangles)
 	{
@@ -347,86 +225,79 @@ struct PyNewtonBuilder
 		if (triangles.ndim() != 2 || triangles.shape(1) != 3)
 			throw std::runtime_error("triangles must be a (M,3) array of ints");
 
-		WorldData info;
-		info.set_name(name);
+		using InputVertexType = std::array<float32_t, 3>;
+		using InputFaceType = std::array<uint32_t, 3>;
 
 		const size_t nverts = vertices.shape(0);
 		const size_t nfaces = triangles.shape(0);
 
-		// copy vertices
-		info.input_mesh.model_positions.resize(nverts);
+		std::vector<InputVertexType> input_vertices(nverts);
+		std::vector<InputFaceType>	 input_triangles(nfaces);
+
 		auto buf_v = vertices.unchecked<2>();
+		auto buf_t = triangles.unchecked<2>();
 		for (size_t i = 0; i < nverts; ++i)
 		{
-			SimMesh::Float3 p;
-			p[0] = static_cast<float>(buf_v(i, 0));
-			p[1] = static_cast<float>(buf_v(i, 1));
-			p[2] = static_cast<float>(buf_v(i, 2));
-			info.input_mesh.model_positions[i] = p;
+			InputVertexType p;
+			p[0] = static_cast<float32_t>(buf_v(i, 0));
+			p[1] = static_cast<float32_t>(buf_v(i, 1));
+			p[2] = static_cast<float32_t>(buf_v(i, 2));
+			input_vertices[i] = p;
 		}
-
-		// copy faces
-		info.input_mesh.faces.resize(nfaces);
-		auto buf_t = triangles.unchecked<2>();
 		for (size_t i = 0; i < nfaces; ++i)
 		{
-			SimMesh::Int3 f;
-			f[0] = static_cast<unsigned int>(buf_t(i, 0));
-			f[1] = static_cast<unsigned int>(buf_t(i, 1));
-			f[2] = static_cast<unsigned int>(buf_t(i, 2));
-			info.input_mesh.faces[i] = f;
+			InputFaceType f;
+			f[0] = static_cast<uint32_t>(buf_t(i, 0));
+			f[1] = static_cast<uint32_t>(buf_t(i, 1));
+			f[2] = static_cast<uint32_t>(buf_t(i, 2));
+			input_triangles[i] = f;
 		}
 
-		SimMesh::extract_edges_from_surface(info.input_mesh.faces, info.input_mesh.edges, info.input_mesh.dihedral_edges, true);
-
-		shell_list.emplace_back(std::move(info));
-		return WorldDataWrapper(&shell_list.back());
+		return WorldDataWrapper(&solver_ptr->register_world_data_from_array(name, input_vertices, input_triangles));
 	}
-
 	// register mesh from an obj file path: read file then compute auxiliary topology
-	WorldDataWrapper register_mesh(const std::string& name, const std::string& obj_file_path)
+	WorldDataWrapper register_mesh_from_file_path(const std::string& name, const std::string& obj_file_path)
 	{
-		WorldData info;
-		info.set_name(name);
-		SimMesh::read_mesh_file(obj_file_path, info.input_mesh);
-
-		shell_list.emplace_back(std::move(info));
-		return WorldDataWrapper(&shell_list.back());
+		return WorldDataWrapper(&solver_ptr->register_world_data_from_file_path(name, obj_file_path));
 	}
+
 	// expose method to get number of registered meshes
-	size_t num_meshes() const { return shell_list.size(); }
+	size_t num_meshes() const { return solver_ptr->get_world_data().size(); }
 
 	// expose a method to export registered meshes as python lists (simple)
 	py::list get_mesh_names() const
 	{
-		py::list out;
-		for (const auto& w : shell_list)
-			out.append(w.get_model_name());
+		py::list				 out;
+		const auto&				 world_data = solver_ptr->get_world_data();
+		std::vector<std::string> names(world_data.size());
+		for (const auto& w : world_data)
+		{
+			names[w.get_registration_index()] = w.get_model_name();
+		}
+		for (const auto& name : names)
+			out.append(name);
 		return out;
 	}
 
-	// Initialize underlying NewtonSolver using the global device/context created by py_init
+	// Initialize underlying NewtonSolver using the device previously set via init_device()/set_device().
 	void init_solver()
 	{
-		if (!g_state.initialized)
-			throw std::runtime_error("Global luisa context/device not initialized. Call init(...) first.");
-
-		solver_ptr->init_solver(*g_state.device, *g_state.stream, shell_list);
-		LUISA_INFO("Solver initialized (device owned={}).", g_state.owns_resources);
+		solver_ptr->init_solver();
+		LUISA_INFO("Solver initialized.");
 	}
 
 	void physics_step_cpu()
 	{
 		if (!solver_ptr)
 			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
-		solver_ptr->physics_step_CPU(*g_state.device, *g_state.stream);
+		solver_ptr->physics_step_CPU();
 	}
 
 	void physics_step_gpu()
 	{
 		if (!solver_ptr)
 			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
-		solver_ptr->physics_step_GPU(*g_state.device, *g_state.stream);
+		solver_ptr->physics_step_GPU();
 	}
 
 	void restart_system()
@@ -454,7 +325,7 @@ struct PyNewtonBuilder
 
 	// Return simulation results as a tuple of (vertices_list, faces_list) of numpy arrays.
 	// Uses memcpy for efficient data transfer.
-	py::tuple get_sim_result_to()
+	py::tuple get_sim_result()
 	{
 		if (!solver_ptr)
 			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
@@ -462,7 +333,9 @@ struct PyNewtonBuilder
 		const uint num_meshes = solver_ptr->get_host_mesh_data().num_meshes;
 
 		std::vector<std::vector<std::array<float, 3>>> sa_rendering_vertices(num_meshes);
-		solver_ptr->get_simulation_results_to_host(sa_rendering_vertices);
+		std::vector<std::vector<std::array<uint, 3>>>  sa_rendering_triangles(num_meshes);
+		solver_ptr->get_curr_vertices_to_host(sa_rendering_vertices);
+		solver_ptr->get_triangles_to_host(sa_rendering_triangles);
 
 		py::list py_verts;
 		py::list py_faces;
@@ -470,49 +343,154 @@ struct PyNewtonBuilder
 		{
 			// vertices – contiguous std::array<float,3>, safe to memcpy
 			const auto&		   mesh_verts = sa_rendering_vertices[i];
-			py::array_t<float> v_arr({ (ssize_t)mesh_verts.size(), (ssize_t)3 });
-			if (!mesh_verts.empty())
-				std::memcpy(v_arr.mutable_data(), mesh_verts.data(), mesh_verts.size() * 3 * sizeof(float));
+			py::array_t<float> v_arr({ (size_t)mesh_verts.size(), (size_t)3 });
+			std::memcpy(v_arr.mutable_data(), mesh_verts.data(), mesh_verts.size() * 3 * sizeof(float));
 			py_verts.append(v_arr);
 
 			// faces
-			const auto&			  mesh_faces = shell_list[i].input_mesh.faces;
-			py::array_t<uint32_t> f_arr({ (ssize_t)mesh_faces.size(), (ssize_t)3 });
-			if (!mesh_faces.empty())
-				std::memcpy(f_arr.mutable_data(), mesh_faces.data(), mesh_faces.size() * 3 * sizeof(uint32_t));
+			const auto&			  mesh_faces = sa_rendering_triangles[i];
+			py::array_t<uint32_t> f_arr({ (size_t)mesh_faces.size(), (size_t)3 });
+			std::memcpy(f_arr.mutable_data(), mesh_faces.data(), mesh_faces.size() * 3 * sizeof(uint32_t));
 			py_faces.append(f_arr);
 		}
 		return py::make_tuple(py_verts, py_faces);
 	}
 
-	void save_to(const std::string& full_path)
+	py::tuple get_object_sim_result_by_registration_id(uint registration_id)
 	{
-		std::vector<std::vector<std::array<float, 3>>> sa_rendering_vertices;
-		std::vector<std::vector<std::array<uint, 3>>>  sa_rendering_faces;
-
 		if (!solver_ptr)
 			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
 
-		const uint num_meshes = solver_ptr->get_host_mesh_data().num_meshes;
+		std::vector<std::array<float, 3>> object_vertices;
+		std::vector<std::array<uint, 3>>  object_triangles;
+		solver_ptr->get_object_sim_result_by_registration_id(registration_id, object_vertices, object_triangles);
 
-		sa_rendering_vertices.resize(num_meshes);
-		sa_rendering_faces.resize(num_meshes);
-		for (uint i = 0; i < num_meshes; ++i)
+		py::array_t<float> v_arr({ (size_t)object_vertices.size(), (size_t)3 });
+		if (!object_vertices.empty())
+			std::memcpy(v_arr.mutable_data(), object_vertices.data(), object_vertices.size() * 3 * sizeof(float));
+
+		py::array_t<uint32_t> f_arr({ (size_t)object_triangles.size(), (size_t)3 });
+		if (!object_triangles.empty())
+			std::memcpy(f_arr.mutable_data(), object_triangles.data(), object_triangles.size() * 3 * sizeof(uint32_t));
+
+		return py::make_tuple(v_arr, f_arr);
+	}
+
+	py::tuple get_object_sim_result_by_unique_name(const std::string& unique_name)
+	{
+		if (!solver_ptr)
+			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
+
+		std::vector<std::array<float, 3>> object_vertices;
+		std::vector<std::array<uint, 3>>  object_triangles;
+		solver_ptr->get_object_sim_result_by_unique_name(unique_name, object_vertices, object_triangles);
+
+		py::array_t<float> v_arr({ (size_t)object_vertices.size(), (size_t)3 });
+		if (!object_vertices.empty())
+			std::memcpy(v_arr.mutable_data(), object_vertices.data(), object_vertices.size() * 3 * sizeof(float));
+
+		py::array_t<uint32_t> f_arr({ (size_t)object_triangles.size(), (size_t)3 });
+		if (!object_triangles.empty())
+			std::memcpy(f_arr.mutable_data(), object_triangles.data(), object_triangles.size() * 3 * sizeof(uint32_t));
+
+		return py::make_tuple(v_arr, f_arr);
+	}
+
+	WorldDataWrapper get_object_by_registration_id(uint registration_id) const
+	{
+		const uint sorted_idx = solver_ptr->query_object_index_by_registration_id(registration_id);
+		return WorldDataWrapper(&solver_ptr->get_world_data()[sorted_idx]);
+	}
+
+	WorldDataWrapper get_object_by_unique_name(const std::string& unique_name) const
+	{
+		const uint sorted_idx = solver_ptr->query_object_index_by_unique_name(unique_name);
+		return WorldDataWrapper(&solver_ptr->get_world_data()[sorted_idx]);
+	}
+
+	void save_sim_result(const std::string& full_path)
+	{
+		if (!solver_ptr)
+			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
+
+		solver_ptr->save_mesh_to_obj(full_path);
+	}
+
+	// ---------------------------------------------------------------------------
+	// Device management (mirrors lcs::SolverInterface device methods)
+	// ---------------------------------------------------------------------------
+
+	// Create and own a luisa device/stream.
+	// backend_name: e.g. "metal", "cuda", "dx". None = platform default.
+	// binary_path : path used by luisa::compute::Context. None = auto-detect from lcs_py module file.
+	void init_device(py::object backend_name_obj = py::none(), py::object binary_path_obj = py::none())
+	{
+		// Resolve binary path
+		std::string binary_path;
+		if (!binary_path_obj.is_none())
 		{
-			sa_rendering_faces[i] = shell_list[i].input_mesh.faces;
+			binary_path = binary_path_obj.cast<std::string>();
 		}
-		solver_ptr->get_simulation_results_to_host(sa_rendering_vertices);
-		SimMesh::saveToOBJ_combined(sa_rendering_vertices, sa_rendering_faces, full_path);
+		else
+		{
+			try
+			{
+				py::module_ self = py::module_::import("lcs_py");
+				if (py::hasattr(self, "__file__"))
+					binary_path = self.attr("__file__").cast<std::string>();
+			}
+			catch (...)
+			{
+			}
+		}
+
+		// Resolve backend name
+		std::string backend;
+		if (!backend_name_obj.is_none())
+			backend = backend_name_obj.cast<std::string>();
+
+		solver_ptr->create_device(binary_path, backend);
+	}
+
+	// Borrow an external device/stream (non-owning). The caller must ensure they outlive this solver.
+	void set_device(uintptr_t device_ptr, uintptr_t stream_ptr)
+	{
+		solver_ptr->set_device_from_pointers(device_ptr, stream_ptr);
+	}
+
+	// Release owned device resources.
+	void cleanup_device()
+	{
+		solver_ptr->cleanup_device();
+	}
+
+	// Return raw pointer (as int) to the active luisa::compute::Device.
+	uintptr_t get_device_ptr() const
+	{
+		return solver_ptr->get_device_ptr();
+	}
+
+	// Return raw pointer (as int) to the active luisa::compute::Stream.
+	uintptr_t get_stream_ptr() const
+	{
+		return solver_ptr->get_stream_ptr();
+	}
+
+	lcs::SceneParams& get_config() const
+	{
+		if (!solver_ptr)
+			throw std::runtime_error("Solver not initialized.");
+		return solver_ptr->get_config();
 	}
 };
 
 PYBIND11_MODULE(lcs_py, m)
 {
-	py::enum_<lcs::Initializer::SimulationType>(m, "SimulationType")
-		.value("Cloth", lcs::Initializer::SimulationType::Cloth)
-		.value("Tetrahedral", lcs::Initializer::SimulationType::Tetrahedral)
-		.value("Rigid", lcs::Initializer::SimulationType::Rigid)
-		.value("Rod", lcs::Initializer::SimulationType::Rod)
+	py::enum_<lcs::Initializer::MaterialType>(m, "MaterialType")
+		.value("Cloth", lcs::Initializer::MaterialType::Cloth)
+		.value("Tetrahedral", lcs::Initializer::MaterialType::Tetrahedral)
+		.value("Rigid", lcs::Initializer::MaterialType::Rigid)
+		.value("Rod", lcs::Initializer::MaterialType::Rod)
 		.export_values();
 
 	py::class_<ClothMaterial>(m, "ClothMaterial")
@@ -563,35 +541,37 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("set_simulation_type", &WorldDataWrapper::set_simulation_type)
 		.def("set_physics_material_cloth",
 			&WorldDataWrapper::set_physics_material_cloth,
-			py::arg("thickness") = 1e-3f,
-			py::arg("youngs_modulus") = 1e6f,
-			py::arg("poisson_ratio") = 0.35f,
-			py::arg("area_bending_stiffness") = 5e-3f)
+			py::arg("thickness") = ClothMaterial::default_thickness(),
+			py::arg("youngs_modulus") = ClothMaterial::default_youngs_modulus(),
+			py::arg("poisson_ratio") = ClothMaterial::default_poisson_ratio(),
+			py::arg("area_bending_stiffness") = ClothMaterial::default_area_bending_stiffness())
 		.def("set_physics_material_tet",
 			&WorldDataWrapper::set_physics_material_tet,
-			py::arg("youngs_modulus") = 1e6f,
-			py::arg("poisson_ratio") = 0.35f,
-			py::arg("density") = 1e3f,
-			py::arg("mass") = 0.0f)
+			py::arg("youngs_modulus") = TetMaterial::default_youngs_modulus(),
+			py::arg("poisson_ratio") = TetMaterial::default_poisson_ratio(),
+			py::arg("density") = TetMaterial::default_density(),
+			py::arg("mass") = TetMaterial::default_mass())
 		.def("set_physics_material_rigid",
 			&WorldDataWrapper::set_physics_material_rigid,
-			py::arg("thickness") = 1e-3f,
-			py::arg("stiffness") = 1e6f,
-			py::arg("density") = 1e3f,
-			py::arg("mass") = 0.0f)
+			py::arg("thickness") = RigidMaterial::default_thickness(),
+			py::arg("stiffness") = RigidMaterial::default_stiffness(),
+			py::arg("density") = RigidMaterial::default_density(),
+			py::arg("mass") = RigidMaterial::default_mass())
 		.def("set_physics_material_rod",
 			&WorldDataWrapper::set_physics_material_rod,
-			py::arg("radius") = 1e-3f,
-			py::arg("bending_stiffness") = 1e4f,
-			py::arg("twisting_stiffness") = 1e4f,
-			py::arg("density") = 1e3f,
-			py::arg("mass") = 0.0f)
+			py::arg("radius") = RodMaterial::default_radius(),
+			py::arg("bending_stiffness") = RodMaterial::default_bending_stiffness(),
+			py::arg("twisting_stiffness") = RodMaterial::default_twisting_stiffness(),
+			py::arg("density") = RodMaterial::default_density(),
+			py::arg("mass") = RodMaterial::default_mass())
 		.def("add_fixed_point_info", &WorldDataWrapper::add_fixed_point_info)
 		.def("add_fixed_point_by_method", &WorldDataWrapper::add_fixed_point_by_method, py::arg("method"), py::arg("range") = 0.001f)
 		.def("add_fixed_point_indices", &WorldDataWrapper::add_fixed_point_indices, py::arg("indices"))
 		.def("set_translation", &WorldDataWrapper::set_translation)
 		.def("set_rotation", &WorldDataWrapper::set_rotation)
-		.def("set_scale", &WorldDataWrapper::set_scale);
+		.def("set_scale", &WorldDataWrapper::set_scale)
+		.def("get_name", &WorldDataWrapper::get_name)
+		.def("get_registration_index", &WorldDataWrapper::get_registration_index);
 
 	// disambiguate overloaded register_mesh signatures
 	using VertArr = py::array_t<double, py::array::c_style | py::array::forcecast>;
@@ -599,62 +579,49 @@ PYBIND11_MODULE(lcs_py, m)
 
 	py::class_<PyNewtonBuilder>(m, "NewtonSolver")
 		.def(py::init<>())
-		.def("register_mesh",
-			(WorldDataWrapper(PyNewtonBuilder::*)(const std::string&, VertArr, TriArr)) & PyNewtonBuilder::register_mesh,
-			py::arg("name"), py::arg("vertices"), py::arg("triangles"))
-		.def("register_mesh",
-			(WorldDataWrapper(PyNewtonBuilder::*)(const std::string&, const std::string&)) & PyNewtonBuilder::register_mesh,
-			py::arg("name"), py::arg("obj_file_path"))
+		.def("register_mesh_from_array", &PyNewtonBuilder::register_mesh_from_array, py::arg("name"), py::arg("vertices"), py::arg("triangles"))
+		.def("register_mesh_from_file_path", &PyNewtonBuilder::register_mesh_from_file_path, py::arg("name"), py::arg("obj_file_path"))
 		.def("num_meshes", &PyNewtonBuilder::num_meshes)
 		.def("get_mesh_names", &PyNewtonBuilder::get_mesh_names)
-		.def("init_solver", &PyNewtonBuilder::init_solver, "Initialize the underlying solver using previously created device/context")
+		.def("init_device",
+			&PyNewtonBuilder::init_device,
+			py::arg("backend_name") = py::none(),
+			py::arg("binary_path") = py::none(),
+			"Create and own a luisa compute device/stream.\n\n"
+			"backend_name: optional backend string (e.g. 'cuda','metal','dx')\n"
+			"binary_path: optional binary path passed to luisa::compute::Context")
+		.def("set_device",
+			&PyNewtonBuilder::set_device,
+			py::arg("device_ptr"),
+			py::arg("stream_ptr"),
+			"Borrow an existing luisa Device/Stream (non-owning).\n\n"
+			"device_ptr: integer address of a luisa::compute::Device object\n"
+			"stream_ptr: integer address of a luisa::compute::Stream object\n"
+			"The caller must ensure these objects outlive this solver.")
+		.def("cleanup_device", &PyNewtonBuilder::cleanup_device, "Release owned device resources (no-op for borrowed device).")
+		.def("get_device_ptr", &PyNewtonBuilder::get_device_ptr, "Return the raw pointer (as int) to the active luisa::compute::Device.")
+		.def("get_stream_ptr", &PyNewtonBuilder::get_stream_ptr, "Return the raw pointer (as int) to the active luisa::compute::Stream.")
+		.def("get_config",
+			&PyNewtonBuilder::get_config,
+			py::return_value_policy::reference_internal,
+			"Return reference to solver-owned SceneParams config")
+		.def("init_solver", &PyNewtonBuilder::init_solver, "Initialize the underlying solver using the device set via init_device()/set_device()")
 		.def("physics_step_cpu", &PyNewtonBuilder::physics_step_cpu)
 		.def("physics_step_gpu", &PyNewtonBuilder::physics_step_gpu)
 		.def("restart_system", &PyNewtonBuilder::restart_system, "Reset positions/velocities to initial rest state")
-		.def("update_pinned_verts_position", &PyNewtonBuilder::update_pinned_verts_position,
-			py::arg("mesh_idx"), py::arg("local_vid"), py::arg("target_pos"))
-		.def("get_sim_result", &PyNewtonBuilder::get_sim_result_to, "Return simulation results as a tuple (vertices_list, faces_list) of numpy arrays")
-		.def("save_sim_result", &PyNewtonBuilder::save_to, py::arg("obj_path"));
-
-	m.def("device_init",
-		&global_create_device,
-		py::arg("backend_name") = py::none(),
-		py::arg("binary_path") = py::none(),
-		"Initialize luisa compute context/device/stream from Python.\n\n"
-		"backend_name: optional backend string (e.g. 'cuda','metal','dx')\n"
-		"binary_path: optional binary path (argv[0]) to pass to luisa::compute::Context");
-
-	m.def("device_set",
-		&global_set_device_from_pointers,
-		py::arg("device_ptr"),
-		py::arg("stream_ptr"),
-		"Share an existing luisa Device/Stream from another module (non-owning).\n\n"
-		"device_ptr: integer address of a luisa::compute::Device object\n"
-		"stream_ptr: integer address of a luisa::compute::Stream object\n"
-		"The caller must ensure these objects outlive this module's usage.");
-
-	m.def("device_cleanup", &global_free_device, "Clean up luisa compute resources created from Python (optional; will also be called automatically at Python shutdown)");
-
-	// Expose getters so other modules can retrieve our device/stream pointers
-	m.def(
-		"get_device_ptr",
-		[]() -> uintptr_t
-		{
-			if (!g_state.initialized)
-				throw std::runtime_error("Device not initialized.");
-			return reinterpret_cast<uintptr_t>(g_state.device);
-		},
-		"Return the raw pointer (as int) to the active luisa::compute::Device.");
-
-	m.def(
-		"get_stream_ptr",
-		[]() -> uintptr_t
-		{
-			if (!g_state.initialized)
-				throw std::runtime_error("Device not initialized.");
-			return reinterpret_cast<uintptr_t>(g_state.stream);
-		},
-		"Return the raw pointer (as int) to the active luisa::compute::Stream.");
+		.def("update_pinned_verts_position", &PyNewtonBuilder::update_pinned_verts_position, py::arg("mesh_idx"), py::arg("local_vid"), py::arg("target_pos"))
+		.def("get_sim_result", &PyNewtonBuilder::get_sim_result, "Return simulation results as a tuple (vertices_list, faces_list) of numpy arrays")
+		.def("get_object_sim_result_by_registration_id",
+			&PyNewtonBuilder::get_object_sim_result_by_registration_id,
+			py::arg("registration_id"),
+			"Return one object simulation result as tuple (vertices, faces) by registration id")
+		.def("get_object_sim_result_by_unique_name",
+			&PyNewtonBuilder::get_object_sim_result_by_unique_name,
+			py::arg("unique_name"),
+			"Return one object simulation result as tuple (vertices, faces) by unique object name")
+		.def("get_object_by_registration_id", &PyNewtonBuilder::get_object_by_registration_id, py::arg("registration_id"))
+		.def("get_object_by_unique_name", &PyNewtonBuilder::get_object_by_unique_name, py::arg("unique_name"))
+		.def("save_sim_result", &PyNewtonBuilder::save_sim_result, py::arg("obj_path"));
 
 	// Expose luisa::float3 so Python can access .x/.y/.z on floor, gravity, etc.
 	py::class_<luisa::float3>(m, "Float3")
@@ -679,18 +646,18 @@ PYBIND11_MODULE(lcs_py, m)
 		.def_readwrite("output_per_frame", &lcs::SceneParams::output_per_frame)
 		.def_readwrite("output_per_iteration", &lcs::SceneParams::output_per_iteration)
 		.def_readwrite("scene_id", &lcs::SceneParams::scene_id)
-		.def_readwrite("num_substep", &lcs::SceneParams::num_substep)
+		.def_readonly("num_substep", &lcs::SceneParams::num_substep)
 		.def_readwrite("nonlinear_iter_count", &lcs::SceneParams::nonlinear_iter_count)
 		.def_readwrite("pcg_iter_count", &lcs::SceneParams::pcg_iter_count)
 		.def_readwrite("current_frame", &lcs::SceneParams::current_frame)
-		.def_readwrite("current_nonlinear_iter", &lcs::SceneParams::current_nonlinear_iter)
-		.def_readwrite("current_pcg_it", &lcs::SceneParams::current_pcg_it)
-		.def_readwrite("current_substep", &lcs::SceneParams::current_substep)
+		.def_readonly("current_nonlinear_iter", &lcs::SceneParams::current_nonlinear_iter)
+		.def_readonly("current_pcg_it", &lcs::SceneParams::current_pcg_it)
+		.def_readonly("current_substep", &lcs::SceneParams::current_substep)
 		.def_readwrite("collision_detection_frequece", &lcs::SceneParams::collision_detection_frequece)
 		.def_readwrite("contact_energy_type", &lcs::SceneParams::contact_energy_type)
 		.def_readwrite("implicit_dt", &lcs::SceneParams::implicit_dt)
 		.def_readwrite("explicit_dt", &lcs::SceneParams::explicit_dt)
-		.def_readwrite("dt", &lcs::SceneParams::dt)
+		.def_readonly("dt", &lcs::SceneParams::dt)
 		.def_readwrite("floor", &lcs::SceneParams::floor)
 		.def_readwrite("gravity", &lcs::SceneParams::gravity)
 		.def_readwrite("stiffness_bending_ui", &lcs::SceneParams::stiffness_bending_ui)
@@ -700,25 +667,6 @@ PYBIND11_MODULE(lcs_py, m)
 		.def_readwrite("d_hat", &lcs::SceneParams::d_hat)
 		.def("get_substep_dt", &lcs::SceneParams::get_substep_dt)
 		.def("get_bending_stiffness_scaling", &lcs::SceneParams::get_bending_stiffness_scaling);
-
-	m.def(
-		"get_scene_params",
-		[]() -> lcs::SceneParams&
-		{ return lcs::get_scene_params(); },
-		py::return_value_policy::reference,
-		"Return reference to global SceneParams singleton");
-
-	m.def("init_scene_params", &lcs::init_scene_params,
-		"Initialize scene params (no-op if already initialized)");
-
-	// Capsule destructor fires during Python interpreter shutdown (before C++
-	// static destruction), ensuring owned resources are released while luisa
-	// internals are still alive.  In borrowed mode this is a harmless no-op.
-	py::capsule cleanup(new int(0), [](void* p)
-		{
-		delete static_cast<int*>(p);
-		g_state.cleanup(); });
-	m.add_object("_cleanup", cleanup);
 
 	m.doc() = "Python bindings for basic NewtonSolver scene building (lightweight)";
 }

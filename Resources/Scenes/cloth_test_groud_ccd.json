@@ -12,7 +12,7 @@
     "contact_energy_type": 1,
     "shells": [
         {
-            "model_name": "square2K.obj",
+            "relative_path": "square2K.obj",
             "translation": [
                 0.0,
                 0.1,
@@ -29,7 +29,7 @@
                     "range": 0.001
                 }
             ],
-            "shell_type": "Cloth"
+            "material_type": "Cloth"
         }
     ]
 }

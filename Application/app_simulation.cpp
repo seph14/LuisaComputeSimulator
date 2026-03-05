@@ -56,30 +56,10 @@ int main(int argc, char** argv)
 		backend = argv[1];
 	}
 
-	const std::string			 binary_path(argv[0]);
-	luisa::compute::Context		 context{ binary_path };
-	luisa::vector<luisa::string> device_names = context.backend_device_names(backend);
-	if (device_names.empty())
-	{
-		LUISA_WARNING("No hardware device found.");
-		exit(1);
-	}
-	for (size_t i = 0; i < device_names.size(); ++i)
-	{
-		LUISA_INFO("Device {}: {}", i, device_names[i]);
-	}
-
-	luisa::compute::Device device = context.create_device(backend,
-		nullptr,
-#ifndef NDEBUG
-		false
-#else
-		true
-#endif
-	);
-	luisa::compute::Stream stream = device.create_stream(luisa::compute::StreamTag::COMPUTE);
+	const std::string binary_path(argv[0]);
 
 	lcs::NewtonSolver solver;
+	solver.create_device(binary_path, backend);
 
 	// Read Mesh
 	std::string scene_json_path = "default_scene.json";
@@ -92,11 +72,11 @@ int main(int argc, char** argv)
 	{
 		LUISA_INFO("Load default scene {}", scene_json_path);
 	}
-	std::vector<lcs::Initializer::WorldData> world_data;
+	std::vector<lcs::Initializer::WorldData>& world_data = solver.get_world_data();
 	Demo::Simulation::load_scene_params_from_json(world_data, scene_json_path);
 
 	// Init Solver
-	solver.init_solver(device, stream, world_data);
+	solver.init_solver();
 
 	auto fn_update_pinned_verts = [&](const uint curr_frame)
 	{
@@ -120,9 +100,9 @@ int main(int argc, char** argv)
 		fn_update_pinned_verts(lcs::get_scene_params().current_frame);
 
 		if (lcs::get_scene_params().use_gpu)
-			solver.physics_step_GPU(device, stream);
+			solver.physics_step_GPU();
 		else
-			solver.physics_step_CPU(device, stream);
+			solver.physics_step_CPU();
 	};
 
 	uint		   max_frame = 0;
@@ -138,14 +118,14 @@ int main(int argc, char** argv)
 		for (uint meshIdx = 0; meshIdx < world_data.size(); meshIdx++)
 		{
 			world_data[meshIdx].get_rest_positions(sa_rendering_vertices[meshIdx]);
-			sa_rendering_faces[meshIdx] = world_data[meshIdx].input_mesh.faces;
+			sa_rendering_faces[meshIdx] = world_data[meshIdx].get_mesh().faces;
 			face_color[meshIdx].resize(sa_rendering_faces[meshIdx].size(), { 0.7, 0.2, 0.3 });
 		}
 	}
 	auto fn_update_rendering_vertices = [&]()
 	{
 		// Get simulation results
-		solver.get_simulation_results_to_host(sa_rendering_vertices);
+		solver.get_curr_vertices_to_host(sa_rendering_vertices);
 	};
 
 	auto fn_save_frame_to_obj = [&](const uint frame_id, const auto& sim_result, const std::string& additional_info = "")
@@ -154,17 +134,12 @@ int main(int argc, char** argv)
 			LCSV_RESOURCE_PATH,
 			lcs::get_scene_params().scene_id,
 			frame_id, additional_info);
-		SimMesh::saveToOBJ_combined(sim_result,
-			sa_rendering_faces,
-			full_path);
+		SimMesh::saveToOBJ_combined(sim_result, sa_rendering_faces, full_path);
+		// solver.save_mesh_to_obj(full_path);
 	};
 
 #if !defined(SIMULATION_APP_USE_GUI)
 	{
-		// solver.lcs::SolverInterface::load_saved_state_from_host(2501, "");
-		// lcs::get_scene_params().current_frame = 2501 + 1;
-		// fn_update_rendering_vertices();
-
 		constexpr bool												   use_merge_writing = true;
 		std::map<uint, std::vector<std::vector<std::array<float, 3>>>> per_frame_rendering_vertices;
 		auto														   fn_save_frame_to_obj_merge =
@@ -205,7 +180,11 @@ int main(int argc, char** argv)
 						});
 					per_frame_rendering_vertices.clear();
 					if (curr_frame != frame_start)
-						solver.lcs::SolverInterface::save_current_frame_state_to_host(curr_frame, "");
+					{
+						std::string scene_directory = luisa::format("{}/OutputMesh/0{}", LCSV_RESOURCE_PATH, lcs::get_scene_params().scene_id);
+						std::string save_state_full_path = scene_directory + "/saved_state.state";
+						solver.lcs::SolverInterface::save_current_frame_state_to_host(save_state_full_path);
+					}
 				}
 			}
 			else
@@ -222,7 +201,7 @@ int main(int argc, char** argv)
 
 		for (uint meshIdx = 0; meshIdx < world_data.size(); meshIdx++)
 		{
-			const std::string&		curr_mesh_name = world_data[meshIdx].model_name + std::to_string(meshIdx);
+			const std::string&		curr_mesh_name = world_data[meshIdx].get_model_name() + std::to_string(meshIdx);
 			polyscope::SurfaceMesh* curr_mesh_ptr = polyscope::registerSurfaceMesh(
 				curr_mesh_name, sa_rendering_vertices[meshIdx], sa_rendering_faces[meshIdx]);
 			curr_mesh_ptr->setEnabled(true);
@@ -297,6 +276,8 @@ int main(int argc, char** argv)
 				}
 			}
 
+			uint& current_frame = lcs::get_scene_params().current_frame;
+
 			if (ImGui::CollapsingHeader("Parameters", ImGuiTreeNodeFlags_DefaultOpen))
 			{
 				// ImGui::InputScalar("Num Substep", ImGuiDataType_U32, &lcs::get_scene_params().num_substep);
@@ -328,10 +309,10 @@ int main(int argc, char** argv)
 
 			if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen))
 			{
-				ImGui::Text("Frame %d", lcs::get_scene_params().current_frame);
+				ImGui::Text("Frame %d", current_frame);
 				if (ImGui::Button("Reset", ImVec2(-1, 0)))
 				{
-					lcs::get_scene_params().current_frame = 0;
+					current_frame = 0;
 					max_frame = 0;
 					solver.lcs::SolverInterface::restart_system();
 					fn_update_rendering_vertices();
@@ -341,12 +322,6 @@ int main(int argc, char** argv)
 				{
 					fn_single_step_with_ui();
 				}
-				// if (ImGui::Button("Advance Some Frame", ImVec2(-1, 0)))
-				// {
-				//     is_simulate_frame = true;
-				//     max_frame         = lcs::get_scene_params().current_frame + optimize_frames;
-				// }
-				// ImGui::InputScalar("Advance Frame Count", ImGuiDataType_U32, &optimize_frames);
 				if (ImGui::Button("Start Simulation", ImVec2(-1, 0)))
 				{
 					is_simulate_frame = true;
@@ -355,7 +330,7 @@ int main(int argc, char** argv)
 				if (ImGui::Button("End Simulation", ImVec2(-1, 0)))
 				{
 					is_simulate_frame = false;
-					max_frame = lcs::get_scene_params().current_frame;
+					max_frame = current_frame;
 				}
 			}
 
@@ -391,30 +366,32 @@ int main(int argc, char** argv)
 
 			if (ImGui::CollapsingHeader("Data IO", ImGuiTreeNodeFlags_DefaultOpen))
 			{
+				std::string scene_directory = luisa::format("{}/OutputMesh/0{}", LCSV_RESOURCE_PATH, lcs::get_scene_params().scene_id);
+				std::string save_state_full_path = scene_directory + "/saved_state.state";
+
 				if (ImGui::Button("Save mesh", ImVec2(-1, 0)))
 				{
-					fn_save_frame_to_obj(lcs::get_scene_params().current_frame, sa_rendering_vertices, "");
+					fn_save_frame_to_obj(current_frame, sa_rendering_vertices, "");
 				}
 				ImGui::Checkbox("Output Each Frame", &lcs::get_scene_params().output_per_frame);
 				if (ImGui::Button("Save State", ImVec2(-1, 0)))
 				{
-					solver.lcs::SolverInterface::save_current_frame_state_to_host(lcs::get_scene_params().current_frame,
-						"");
+					solver.lcs::SolverInterface::save_current_frame_state_to_host(save_state_full_path);
 				}
 				static uint state_frame = -1u;
-				ImGui::InputScalar("Load State Frame", ImGuiDataType_U32, &state_frame);
 				if (ImGui::Button("Load State", ImVec2(-1, 0)))
 				{
-					solver.lcs::SolverInterface::load_saved_state_from_host(state_frame, "");
+					solver.lcs::SolverInterface::load_saved_state_from_host(save_state_full_path);
 					lcs::get_scene_params().current_frame = state_frame;
 					fn_update_rendering_vertices();
 					fn_update_GUI_vertices();
 				}
+				ImGui::InputScalar("Load State Frame", ImGuiDataType_U32, &state_frame);
 			}
 
 			if (is_simulate_frame)
 			{
-				if (lcs::get_scene_params().output_per_frame && lcs::get_scene_params().current_frame == 0)
+				if (lcs::get_scene_params().output_per_frame && current_frame == 0)
 				{
 					// First frame
 					fn_save_frame_to_obj(0, sa_rendering_vertices, "_init");
@@ -424,11 +401,11 @@ int main(int argc, char** argv)
 
 				const float animation_fps = 60.0f;
 				const uint	output_freq = (1.0f / animation_fps) / lcs::get_scene_params().implicit_dt;
-				if (lcs::get_scene_params().output_per_frame && lcs::get_scene_params().current_frame % output_freq == 0)
+				if (lcs::get_scene_params().output_per_frame && current_frame % output_freq == 0)
 				{
-					fn_save_frame_to_obj(lcs::get_scene_params().current_frame, sa_rendering_vertices, "");
+					fn_save_frame_to_obj(current_frame, sa_rendering_vertices, "");
 				}
-				if (lcs::get_scene_params().current_frame >= max_frame)
+				if (current_frame >= max_frame)
 				{
 					is_simulate_frame = false;
 				}

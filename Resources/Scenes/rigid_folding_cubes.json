@@ -5,34 +5,34 @@
     "contact_energy_type": 1,
     "shells": [
         {
-            "model_name": "cube.obj",
+            "relative_path": "cube.obj",
             "translation": [
                 0.0,
                 1.0,
                 0.0
             ],
             "scale": 0.1,
-            "shell_type": "Rigid"
+            "material_type": "Rigid"
         },
         {
-            "model_name": "cube.obj",
+            "relative_path": "cube.obj",
             "translation": [
                 0.0,
                 0.7,
                 0.0
             ],
             "scale": 0.2,
-            "shell_type": "Rigid"
+            "material_type": "Rigid"
         },
         {
-            "model_name": "cube.obj",
+            "relative_path": "cube.obj",
             "translation": [
                 0.0,
                 0.1,
                 0.0
             ],
             "scale": 0.5,
-            "shell_type": "Rigid"
+            "material_type": "Rigid"
         }
     ]
 }

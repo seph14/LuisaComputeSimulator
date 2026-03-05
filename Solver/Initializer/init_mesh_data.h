@@ -4,6 +4,7 @@
 #include "MeshOperation/mesh_reader.h"
 #include "SimulationCore/base_mesh.h"
 #include "SimulationCore/physical_material.h"
+#include <limits>
 
 namespace lcs
 {
@@ -102,18 +103,10 @@ namespace lcs
 			void*					data_ptr = nullptr;
 		};
 
-		enum class SimulationType
-		{
-			None,
-			Cloth,
-			Tetrahedral,
-			Rigid,
-			Rod,
-		};
-
 		struct WorldData
 		{
-			std::string model_name = "square8K.obj";
+			// std::string file_path;
+			std::string model_name;
 			float3		translation = luisa::make_float3(0.0f, 0.0f, 0.0f);
 			float3		rotation = luisa::make_float3(0.0f * lcs::Pi); // Rotation in x-channel means rotate along with x-axis
 			float3		scale = luisa::make_float3(1.0f);
@@ -123,8 +116,11 @@ namespace lcs
 			std::vector<uint>					 fixed_point_indices;
 			std::vector<FixedPointAnimationInfo> fixed_point_animations;
 
-			SimulationType			  simulation_type = SimulationType::Cloth;
+			MaterialType			  material_type = MaterialType::Cloth;
 			SimMesh::TriangleMeshData input_mesh;
+			uint					  registration_index = std::numeric_limits<uint>::max();
+
+			SimMesh::TriangleMeshData& get_mesh() { return input_mesh; }
 
 			template <typename T>
 			bool holds() const
@@ -143,28 +139,30 @@ namespace lcs
 			}
 
 			WorldData()
-				: model_name("sim_object")
-				, simulation_type(SimulationType::None)
+				: model_name("unnamed")
+				, material_type(MaterialType::None)
 			{
 			}
-			WorldData(const std::string& model_name, const SimulationType& mesh_type)
-				: model_name(model_name)
-				, simulation_type(mesh_type)
-			{
-			}
-			WorldData& set_name(const std::string& model_name)
+			WorldData& set_name(const std::string_view& model_name)
 			{
 				this->model_name = model_name;
 				return *this;
 			}
-			WorldData& set_simulation_type(const SimulationType& sim_type)
+			// WorldData& set_file_path(const std::string_view& file_path)
+			// {
+			// 	this->file_path = file_path;
+			// 	return *this;
+			// }
+			WorldData& set_material_type(const MaterialType& sim_type)
 			{
-				this->simulation_type = sim_type;
+				this->material_type = sim_type;
 				return *this;
 			}
 			WorldData& add_fixed_point_info(const MakeFixedPointsInterface& info);
-			WorldData& load_mesh_data();
-			WorldData& load_mesh_from_path(const std::string& path);
+
+			// template <typename Int, typename Real>
+			WorldData& load_mesh_from_array(const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces);
+			WorldData& load_mesh_from_path(const std::string_view& path);
 
 			WorldData& set_translation(const float3& t)
 			{
@@ -275,7 +273,7 @@ namespace lcs
 					}
 					else
 					{
-						LUISA_ERROR("Mesh {} should not have thickness", model_name);
+						LUISA_ERROR("Mesh {} should not have thickness", get_model_name());
 						return 0.0f;
 					}
 				}
@@ -284,9 +282,17 @@ namespace lcs
 					return 0.0f;
 				}
 			}
+			// std::string get_model_path() const
+			// {
+			// 	return file_path;
+			// }
 			std::string get_model_name() const
 			{
-				return std::filesystem::path(model_name).filename().string();
+				return model_name;
+			}
+			uint get_registration_index() const
+			{
+				return registration_index;
 			}
 
 			void set_pinned_verts_from_norm_position(const std::function<bool(const float3&)>& func,
@@ -299,7 +305,8 @@ namespace lcs
 
 			void update_default_vertex_animations(const float time, std::vector<Animation::PerVertexAnimation>& vertex_animations);
 			// void get_body_animation(const float time, Animation::PerBodyAnimation& body_animation);
-			void get_rest_positions(std::vector<std::array<float, 3>>& rest_positions);
+			void							  get_rest_positions(std::vector<std::array<float, 3>>& rest_positions) const;
+			std::vector<std::array<float, 3>> get_rest_positions() const;
 		};
 
 		void init_mesh_data(std::vector<lcs::Initializer::WorldData>& shell_list, lcs::MeshData<std::vector>* mesh_data);

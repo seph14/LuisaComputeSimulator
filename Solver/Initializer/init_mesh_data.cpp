@@ -38,11 +38,6 @@ namespace lcs
 		void WorldData::set_pinned_verts_from_functions(const std::function<bool(uint)>& func,
 			const FixedPointAnimationInfo&												 fixed_info)
 		{
-			if (input_mesh.model_positions.size() == 0)
-			{
-				load_mesh_data();
-			}
-
 			for (uint vid = 0; vid < input_mesh.model_positions.size(); vid++)
 			{
 				if (func(vid))
@@ -55,11 +50,6 @@ namespace lcs
 		void WorldData::set_pinned_verts_from_norm_position(const std::function<bool(const float3&)>& func,
 			const FixedPointAnimationInfo&															  fixed_info)
 		{
-			if (input_mesh.model_positions.size() == 0)
-			{
-				load_mesh_data();
-				// LUISA_INFO("ShellInfo::set_pinned_verts_from_norm_position() : auto load mesh data for shell {}", model_name);
-			}
 			AABB local_aabb = CpuParallel::parallel_for_and_reduce_sum<AABB>(
 				0,
 				input_mesh.model_positions.size(),
@@ -90,11 +80,6 @@ namespace lcs
 		void WorldData::set_pinned_verts_from_indices(const std::vector<uint>& indices,
 			const FixedPointAnimationInfo&									   fixed_info)
 		{
-			if (input_mesh.model_positions.size() == 0)
-			{
-				load_mesh_data();
-			}
-
 			for (const uint vid : indices)
 			{
 				auto   read_pos = input_mesh.model_positions[vid];
@@ -270,7 +255,7 @@ namespace lcs
 		//     auto        target   = FixedPointAnimationInfo::fn_affine_position(fixed_info, time, rest_pos);
 		//     body_animation.set_translation(target.x, target.y, target.z);
 		// }
-		void WorldData::get_rest_positions(std::vector<std::array<float, 3>>& rest_positions)
+		void WorldData::get_rest_positions(std::vector<std::array<float, 3>>& rest_positions) const
 		{
 			rest_positions.resize(input_mesh.model_positions.size());
 			auto transform_matrix = lcs::make_model_matrix(translation, rotation, scale);
@@ -286,15 +271,30 @@ namespace lcs
 				rest_positions[vid] = output;
 			}
 		}
-		WorldData& WorldData::load_mesh_data()
+		std::vector<std::array<float, 3>> WorldData::get_rest_positions() const
 		{
-			if (input_mesh.model_positions.empty())
+			std::vector<std::array<float, 3>> rest_positions;
+			get_rest_positions(rest_positions);
+			return rest_positions;
+		}
+
+		// template <typename Int, typename Real>
+		WorldData& WorldData::load_mesh_from_array(const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces)
+		{
+			input_mesh.model_positions.resize(vertices.size());
+			input_mesh.faces.resize(faces.size());
+			for (size_t i = 0; i < vertices.size(); i++)
 			{
-				bool second_read = SimMesh::read_mesh_file(model_name, input_mesh);
+				input_mesh.model_positions[i] = { float(vertices[i][0]), float(vertices[i][1]), (vertices[i][2]) };
 			}
+			for (size_t i = 0; i < faces.size(); i++)
+			{
+				input_mesh.faces[i] = { uint(faces[i][0]), uint(faces[i][1]), uint(faces[i][2]) };
+			}
+			SimMesh::extract_edges_from_surface(input_mesh.faces, input_mesh.edges, input_mesh.dihedral_edges, true);
 			return *this;
 		}
-		WorldData& WorldData::load_mesh_from_path(const std::string& path)
+		WorldData& WorldData::load_mesh_from_path(const std::string_view& path)
 		{
 			bool succ = SimMesh::read_mesh_file(path, input_mesh);
 			return *this;
@@ -307,10 +307,22 @@ namespace lcs
 		// template<template<typename> typename BasicBuffer>
 		void init_mesh_data(std::vector<lcs::Initializer::WorldData>& world_data, lcs::MeshData<std::vector>* mesh_data)
 		{
+			for (uint i = 0; i < world_data.size(); i++)
+			{
+				if (world_data[i].registration_index == std::numeric_limits<uint>::max())
+				{
+					world_data[i].registration_index = i;
+				}
+			}
+
 			std::sort(world_data.begin(),
 				world_data.end(),
 				[](const Initializer::WorldData& left, const Initializer::WorldData& right)
-				{ return int(left.simulation_type) < int(right.simulation_type); });
+				{
+					if (left.material_type != right.material_type)
+						return int(left.material_type) < int(right.material_type);
+					return left.registration_index < right.registration_index;
+				});
 			const uint num_meshes = world_data.size();
 			// std::vector<SimMesh::TriangleMeshData> input_meshes(num_meshes);
 
@@ -327,6 +339,8 @@ namespace lcs
 			mesh_data->prefix_num_edges.resize(1 + num_meshes, 0);
 			mesh_data->prefix_num_dihedral_edges.resize(1 + num_meshes, 0);
 			mesh_data->prefix_num_tets.resize(1 + num_meshes, 0);
+			mesh_data->sorted_to_input_mesh_id.resize(num_meshes);
+			mesh_data->input_to_sorted_mesh_id.resize(num_meshes);
 
 			mesh_data->sa_rest_translate.resize(num_meshes);
 			mesh_data->sa_rest_rotation.resize(num_meshes);
@@ -338,13 +352,13 @@ namespace lcs
 			for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
 			{
 				auto& shell_info = world_data[meshIdx];
-				auto& input_mesh = shell_info.input_mesh;
+				auto& input_mesh = shell_info.get_mesh();
 				if (input_mesh.model_positions.empty())
 				{
-					shell_info.load_mesh_data();
+					LUISA_ERROR("Mesh {} has no vertex positions.", shell_info.get_model_name());
 				}
 
-				if (shell_info.simulation_type == SimulationType::Cloth)
+				if (shell_info.material_type == MaterialType::Cloth)
 				{
 					if (!shell_info.holds<ClothMaterial>())
 					{
@@ -353,7 +367,7 @@ namespace lcs
 					auto& mat = shell_info.get_material<ClothMaterial>();
 					mat.is_shell = true; // Cloth material must be shell
 				}
-				else if (shell_info.simulation_type == SimulationType::Tetrahedral)
+				else if (shell_info.material_type == MaterialType::Tetrahedral)
 				{
 					if (!shell_info.holds<TetMaterial>())
 					{
@@ -362,14 +376,14 @@ namespace lcs
 					auto& mat = shell_info.get_material<TetMaterial>();
 					mat.is_shell = false;
 				}
-				else if (shell_info.simulation_type == SimulationType::Rigid)
+				else if (shell_info.material_type == MaterialType::Rigid)
 				{
 					if (!shell_info.holds<RigidMaterial>())
 					{
 						shell_info.physics_material = RigidMaterial();
 					}
 					const bool has_boundary =
-						shell_info.input_mesh.dihedral_edges.size() != shell_info.input_mesh.edges.size();
+						input_mesh.dihedral_edges.size() != input_mesh.edges.size();
 
 					auto& mat = shell_info.get_material<RigidMaterial>();
 					mat.is_shell = !mat.is_solid;
@@ -390,7 +404,7 @@ namespace lcs
 						mat.thickness = 0.0f;
 					}
 				}
-				else if (shell_info.simulation_type == SimulationType::Rod)
+				else if (shell_info.material_type == MaterialType::Rod)
 				{
 					if (!shell_info.holds<RodMaterial>())
 					{
@@ -406,6 +420,10 @@ namespace lcs
 			{
 				auto& shell_info = world_data[meshIdx];
 				auto& input_mesh = shell_info.input_mesh;
+
+				uint registration_index = shell_info.get_registration_index();
+				mesh_data->sorted_to_input_mesh_id[meshIdx] = registration_index;
+				mesh_data->input_to_sorted_mesh_id[registration_index] = meshIdx;
 
 				mesh_data->prefix_num_verts[meshIdx] = mesh_data->num_verts;
 				mesh_data->prefix_num_faces[meshIdx] = mesh_data->num_faces;
@@ -474,7 +492,7 @@ namespace lcs
 				for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
 				{
 					auto&		curr_shell_info = world_data[meshIdx];
-					const auto& curr_input_mesh = curr_shell_info.input_mesh;
+					const auto& curr_input_mesh = curr_shell_info.get_mesh();
 
 					// Model info
 					{
@@ -505,7 +523,7 @@ namespace lcs
 							mesh_data->sa_rest_x[prefix_num_verts + vid] = world_position;
 							mesh_data->sa_rest_v[prefix_num_verts + vid] = luisa::make_float3(0.0f);
 							mesh_data->sa_vert_mesh_id[prefix_num_verts + vid] = meshIdx;
-							mesh_data->sa_vert_mesh_type[prefix_num_verts + vid] = uint(curr_shell_info.simulation_type);
+							mesh_data->sa_vert_mesh_type[prefix_num_verts + vid] = uint(curr_shell_info.material_type);
 						});
 					// Read triangle face
 					CpuParallel::parallel_for(0,
@@ -869,7 +887,7 @@ namespace lcs
 					{
 						if (shell_info.input_mesh.tetrahedrons.empty())
 						{
-							if (shell_info.simulation_type == SimulationType::Tetrahedral)
+							if (shell_info.material_type == MaterialType::Tetrahedral)
 							{
 								LUISA_ERROR("Mesh {} is set as Tetrahedral type but has no tetrahedron elements!", meshIdx);
 							}

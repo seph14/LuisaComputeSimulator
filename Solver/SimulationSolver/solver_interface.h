@@ -1,6 +1,7 @@
 #pragma once
 
 #include <luisa/luisa-compute.h>
+#include <cstdint>
 #include <string>
 #include "CollisionDetector/lbvh.h"
 #include "CollisionDetector/narrow_phase.h"
@@ -25,9 +26,44 @@
 #include "Energies/bending_energy_kernel.h"
 #include "Energies/abd_inertia_energy.h"
 #include "Energies/abd_ortho_energy.h"
+#include "SimulationCore/scene_params.h"
 
 namespace lcs
 {
+
+	// Global state for luisa device/context created from Python.
+	// Supports two modes:
+	//   - Owned:    created by device_init(), resources released by cleanup()
+	//   - Borrowed: set by device_set(), caller retains ownership
+	struct GlobalState
+	{
+		// Owned resources (only populated when we create them ourselves)
+		std::unique_ptr<luisa::compute::Context> owned_context;
+		std::unique_ptr<luisa::compute::Device>	 owned_device;
+		std::unique_ptr<luisa::compute::Stream>	 owned_stream;
+
+		// Active pointers (always valid when initialized == true;
+		// point to owned_* or external objects depending on mode)
+		luisa::compute::Device* device = nullptr;
+		luisa::compute::Stream* stream = nullptr;
+
+		bool initialized = false;
+		bool owns_resources = false;
+
+		void cleanup()
+		{
+			device = nullptr;
+			stream = nullptr;
+			if (owns_resources)
+			{
+				owned_stream.reset();
+				owned_device.reset();
+				owned_context.reset();
+			}
+			initialized = false;
+			owns_resources = false;
+		}
+	};
 
 	class SolverInterface
 	{
@@ -59,34 +95,48 @@ namespace lcs
 			lcs::ConjugateGradientSolver pcg_solver;
 		};
 
-		// public:
-		//     template<typename T>
-		//     using Buffer = luisa::compute::Buffer<T>;
-
 	public:
-		SolverInterface() {}
+		SolverInterface()
+		{
+			scene_params_ptr = lcs::get_scene_params_ptr();
+			if (!scene_params_ptr)
+			{
+				scene_params_ptr = std::make_shared<SceneParams>();
+				lcs::set_scene_params_ptr(scene_params_ptr);
+			}
+		}
 		~SolverInterface() {}
 
 	private:
 		void init_animation(const std::vector<lcs::Initializer::WorldData>& world_data);
 
 	protected:
-		void init_data(luisa::compute::Device&		  device,
-			luisa::compute::Stream&					  stream,
-			std::vector<lcs::Initializer::WorldData>& shell_list);
+		void init_data(luisa::compute::Device& device, luisa::compute::Stream& stream);
 		void compile(AsyncCompiler& compiler);
 		void set_data_pointer(SolverData& solver_data, SolverHelper& solver_helper);
 
 	public:
 		void restart_system();
-		void save_current_frame_state_to_host(const uint frame, const std::string& addition_str);
-		void load_saved_state_from_host(const uint frame, const std::string& addition_str);
-		void save_mesh_to_obj(const uint frame, const std::string& addition_str = "");
 		void device_compute_elastic_energy(luisa::compute::Stream& stream, std::map<std::string, double>& energy_list);
 		void compile_compute_energy(AsyncCompiler& compiler);
 
 	public:
-		void get_simulation_results_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
+		void save_current_frame_state_to_host(const std::string_view& full_path);
+		void load_saved_state_from_host(const std::string_view& full_path);
+		void save_mesh_to_obj(const std::string_view& full_path);
+
+	public:
+		void get_curr_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
+		void get_rest_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
+		void get_triangles_to_host(std::vector<std::vector<std::array<uint, 3>>>& output_triangles);
+		uint query_object_index_by_registration_id(uint registration_id) const;
+		uint query_object_index_by_unique_name(const std::string& unique_name) const;
+		void get_object_sim_result_by_registration_id(uint registration_id,
+			std::vector<std::array<float, 3>>&			   output_positions,
+			std::vector<std::array<uint, 3>>&			   output_triangles);
+		void get_object_sim_result_by_unique_name(const std::string& unique_name,
+			std::vector<std::array<float, 3>>&						 output_positions,
+			std::vector<std::array<uint, 3>>&						 output_triangles);
 		void update_pinned_verts_position(const uint meshIdx,
 			const uint								 local_vid,
 			const std::array<float, 3>&				 pinned_verts_target_position);
@@ -99,6 +149,8 @@ namespace lcs
 		void physics_step_post_operation();
 
 	private:
+		std::vector<Initializer::WorldData> world_data;
+
 		SolverData	 solver_data;
 		SolverHelper solver_helper;
 
@@ -133,6 +185,43 @@ namespace lcs
 		SimulationData<std::vector>&		   get_host_sim_data() const { return *host_sim_data; }
 		CollisionData<std::vector>&			   get_host_collision_data() const { return *host_collision_data; }
 		CollisionData<luisa::compute::Buffer>& get_device_collision_data() const { return *collision_data; }
+		std::vector<Initializer::WorldData>&   get_world_data() { return world_data; }
+
+		Initializer::WorldData& register_world_data(const Initializer::WorldData& wd)
+		{
+			auto& data = world_data.emplace_back(wd);
+			data.registration_index = static_cast<uint>(world_data.size() - 1);
+			return data;
+		}
+		Initializer::WorldData& register_world_data_from_file_path(const std::string_view& name, const std::string_view& file_path)
+		{
+			auto& data = world_data.emplace_back().load_mesh_from_path(file_path).set_name(name);
+			data.registration_index = static_cast<uint>(world_data.size() - 1);
+			return data;
+		}
+		Initializer::WorldData& register_world_data_from_array(const std::string_view& name, const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces)
+		{
+			auto& data = world_data.emplace_back().load_mesh_from_array(vertices, faces).set_name(name);
+			data.registration_index = static_cast<uint>(world_data.size() - 1);
+			return data;
+		}
+
+		// Device management: create and own a luisa device/stream.
+		// binary_path : argv[0], used by luisa::compute::Context. Empty = use current executable path.
+		// backend_name: e.g. "metal", "cuda", "dx". Empty = platform default.
+		void create_device(const std::string& binary_path, const std::string& backend_name = "");
+
+		// Device management: borrow an external device/stream (non-owning).
+		// The caller must ensure the objects outlive this solver.
+		void set_device_from_pointers(uintptr_t device_ptr, uintptr_t stream_ptr);
+
+		// Release owned device resources (no-op when using borrowed device).
+		void cleanup_device();
+
+		// Accessors for inter-module sharing.
+		uintptr_t	 get_device_ptr() const;
+		uintptr_t	 get_stream_ptr() const;
+		SceneParams& get_config() const { return *scene_params_ptr; }
 
 	protected:
 		// Accessors for energy objects for derived solvers
@@ -171,6 +260,12 @@ namespace lcs
 
 	protected:
 		luisa::fiber::scheduler scheduler;
+
+		// Device/stream state owned or borrowed by this solver instance.
+		GlobalState					 device_state;
+		std::shared_ptr<SceneParams> scene_params_ptr;
+
+		SceneParams& get_scene_params() const { return *scene_params_ptr; }
 	};
 
 } // namespace lcs

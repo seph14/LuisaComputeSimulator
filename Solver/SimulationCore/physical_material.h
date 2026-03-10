@@ -1,62 +1,72 @@
 #pragma once
 
+#include <string_view>
+#include <type_traits>
 #include <variant>
 
 namespace lcs
 {
 
-	namespace Initializer
+	namespace Material
 	{
 		enum class ConstitutiveStretchModelCloth
 		{
-			// None     = 0,
-			Spring = 0,	  // Impl
-			FEM_BW98 = 1, // Impl
+			Empty,
+			Spring,	  // Impl
+			FEM_BW98, // Impl
 		};
 		enum class ConstitutiveBendingModelCloth
 		{
-			None = 0,
-			QuadraticBending = 1, // Impl
-			DihedralAngle = 2,	  // Impl
+			Empty,
+			QuadraticBending, // Impl
+			DihedralAngle,	  // Impl
 		};
 		enum class ConstitutiveModelTet
 		{
-			// None             = 0,
-			Spring = 0, // Impl
-			StVK = 1,
-			StableNeoHookean = 2,
-			Corotated = 3,
-			ARAP = 4,
+			Empty,
+			Spring, // Impl
+			StVK,
+			StableNeoHookean,
+			Corotated,
+			ARAP,
 		};
 		enum class ConstitutiveModelRigid
 		{
-			// None          = 0,
-			Spring = 0,
-			Orthogonality = 1, // Impl
-			ARAP = 2,
-			StableNeoHookean = 3, // Full space simulation
+			Empty,
+			Spring,
+			Orthogonality, // Impl
+			ARAP,
+			StableNeoHookean, // Full space simulation
 		};
 		enum class ConstitutiveModelRod
 		{
-			Spring = 0,
+			Empty,
+			Spring,
 		};
 
 		enum class MaterialType
 		{
-			None,
+			Particle,
 			Cloth,
 			Tetrahedral,
 			Rigid,
 			Rod,
+			// Particle
+			// Fluid,
+			// Snow,
+			// Sand,
+			// etc.
 		};
 
 		struct MaterialBase
 		{
 			static constexpr float default_mass() { return 0.0f; }
 			static constexpr float default_density() { return 1e3f; }
+			static constexpr float default_contact_offset() { return 0.0f; }
 			static constexpr float default_d_hat() { return 1e-3f; }
 			static constexpr float default_friction_mu() { return 0.5f; }
 
+			float contact_offset = default_contact_offset();
 			float mass = default_mass();
 			float density = default_density();
 			float d_hat = default_d_hat();
@@ -64,6 +74,11 @@ namespace lcs
 			bool  is_shell = true;
 		};
 
+		struct ParticleMaterial : MaterialBase
+		{
+			static constexpr float default_radius() { return 1e-3f; }
+			float				   radius = default_radius();
+		};
 		struct ClothMaterial : MaterialBase
 		{
 			static constexpr ConstitutiveStretchModelCloth default_stretch_model() { return ConstitutiveStretchModelCloth::FEM_BW98; }
@@ -133,10 +148,25 @@ namespace lcs
 					else if constexpr (std::is_same_v<T, RodMaterial>)
 						return MaterialType::Rod;
 					else
-						return MaterialType::None; },
+						return MaterialType::Particle; },
 				var);
 		}
 
-	} // namespace Initializer
+	} // namespace Material
+
+	namespace Material
+	{
+		std::string_view cloth_stretch_model_to_string(ConstitutiveStretchModelCloth model);
+		std::string_view cloth_bending_model_to_string(ConstitutiveBendingModelCloth model);
+		std::string_view tet_model_to_string(ConstitutiveModelTet model);
+		std::string_view rigid_model_to_string(ConstitutiveModelRigid model);
+		std::string_view rod_model_to_string(ConstitutiveModelRod model);
+
+		ConstitutiveStretchModelCloth parse_cloth_stretch_model(const std::string_view& s);
+		ConstitutiveBendingModelCloth parse_cloth_bending_model(const std::string_view& s);
+		ConstitutiveModelTet		  parse_tet_model(const std::string_view& s);
+		ConstitutiveModelRigid		  parse_rigid_model(const std::string_view& s);
+		ConstitutiveModelRod		  parse_rod_model(const std::string_view& s);
+	} // namespace Material
 
 } // namespace lcs

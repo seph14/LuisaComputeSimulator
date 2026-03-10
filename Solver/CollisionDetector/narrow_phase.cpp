@@ -24,12 +24,10 @@ namespace lcs // Data IO
 	{
 		using namespace luisa::compute;
 
-		ContactEnergyType contact_energy_type = get_scene_params().contact_energy_type == 0 ? ContactEnergyType::Quadratic : ContactEnergyType::Barrier; // Quadratic or Barrier
-
 		compile_ccd(compiler);
-		compile_dcd(compiler, contact_energy_type);
-		compile_friction(compiler, contact_energy_type);
-		compile_energy(compiler, contact_energy_type);
+		compile_dcd(compiler);
+		compile_friction(compiler);
+		compile_energy(compiler);
 		compile_construct_pervert_adj_collision_list(compiler);
 		compile_make_contact_triplet(compiler);
 		compile_assemble_atomic(compiler);
@@ -316,7 +314,7 @@ template <typename T>
 	const T&															   sa_per_vert_offset)
 {
 	auto offset1 = sa_per_vert_offset.read(vid1);
-	auto offset2 = sa_per_vert_offset.read(vid1);
+	auto offset2 = sa_per_vert_offset.read(vid2);
 	auto thickness = offset1 + offset2;
 	return thickness;
 }
@@ -333,6 +331,15 @@ namespace lcs // CCD
 {
 
 	constexpr bool print_unsafe_toi = true;
+	constexpr bool ignore_init_penetration = true;
+
+	Var<bool> is_invalid_combo(const Var<VertexProperty>& left, const Var<VertexProperty>& right)
+	{
+		return (left->is_fixed() & right->is_fixed())			  // Both fixed
+			| (left->is_rigid_body() & right->is_rigid_body()	  // Both from rigid body
+				& left->get_object_id() == right->get_object_id() // 	and from the same rigid body
+			);
+	}
 
 	void NarrowPhasesDetector::compile_ccd(AsyncCompiler& compiler)
 	{
@@ -358,16 +365,29 @@ namespace lcs // CCD
 
 		luisa::compute::ShaderOption option{ .enable_debug_info = true };
 
+		compiler.compile(
+			fn_reset_vertex_property, [](BufferVar<VertexProperty> sa_x_property)
+			{ 
+				auto idx = dispatch_x();
+				auto property = sa_x_property->read(idx);
+				// $if(property->is_init_penetrated())
+				// {
+				// 	device_log("Vertex {} is init penetrated", idx);
+				// };
+				property->set_is_not_init_penetrated();
+				sa_x_property->write(idx, property); },
+			option);
+
 		compiler.compile<1>(
 			fn_narrow_phase_vf_ccd_query,
-			[offset_vf](Var<CDBG> collision_data,
-				BufferVar<float3> sa_x_begin,
-				BufferVar<float3> sa_x_end,
-				BufferVar<uint3>  sa_faces_right,
-				BufferVar<uint>	  sa_vert_body_idx,
-				BufferVar<float>  sa_vert_d_hat, // Not relavent to d_hat
-				BufferVar<float>  sa_vert_offset,
-				Uint			  dispatch_prefix)
+			[offset_vf](Var<CDBG>		  collision_data,
+				BufferVar<float3>		  sa_x_begin,
+				BufferVar<float3>		  sa_x_end,
+				BufferVar<uint3>		  sa_faces_right,
+				BufferVar<VertexProperty> sa_x_property,
+				BufferVar<float>		  sa_vert_d_hat, // Not relavent to d_hat
+				BufferVar<float>		  sa_vert_offset,
+				Uint					  dispatch_prefix)
 			{
 				auto& sa_toi = collision_data->toi_per_vert;
 				auto& broadphase_count = collision_data->broad_phase_collision_count;
@@ -385,11 +405,12 @@ namespace lcs // CCD
 
 				const Uint3 face = sa_faces_right.read(fid);
 
+				const auto left_property = sa_x_property.read(vid);
+				const auto right_property = sa_x_property.read(face[0]);
+
 				Float toi = accd::line_search_max_t;
 				$if(vid == face[0] | vid == face[1] | vid == face[2]
-					| (sa_vert_body_idx.read(vid) != -1u							   // Is from rigid body
-						& sa_vert_body_idx.read(vid) == sa_vert_body_idx.read(face[0]) // From the same rigid body
-						))
+					| is_invalid_combo(left_property, right_property))
 				{
 					toi = accd::line_search_max_t;
 				}
@@ -416,43 +437,40 @@ namespace lcs // CCD
 					//     sa_toi->atomic(1).fetch_min(end_dist);
 					// };
 
-					$if(toi == 0.001f)
-					{
-						device_log("VF CCD pair {} : left = {}, vid = {}, right = {}, face = {}, TOI = {}, InitDist = {}, EndDist = {}",
-							pair_idx,
-							vid,
-							vid,
-							fid,
-							face,
-							toi,
-							sqrt(distance::point_triangle_distance_squared_unclassified(t0_p, t0_f0, t0_f1, t0_f2)),
-							sqrt(distance::point_triangle_distance_squared_unclassified(t1_p, t1_f0, t1_f1, t1_f2)));
-					};
-
 					$if(toi<0.0f | toi> accd::line_search_max_t | toi == 0.001f)
 					{
-						if constexpr (print_unsafe_toi)
-							device_log(
-								"VF CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, thickness = {}",
-								vid,
-								face,
-								toi,
-								sqrt(distance::point_triangle_distance_squared_unclassified(t0_p, t0_f0, t0_f1, t0_f2)),
-								sqrt(distance::point_triangle_distance_squared_unclassified(t1_p, t1_f0, t1_f1, t1_f2)),
-								thickness);
+						if constexpr (ignore_init_penetration)
+						{
+							$if(left_property->is_init_penetrated() | right_property->is_init_penetrated())
+							{
+								toi = accd::line_search_max_t;
+							};
+						}
+						else
+						{
+							if constexpr (print_unsafe_toi)
+								device_log(
+									"VF CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, thickness = {}",
+									vid,
+									face,
+									toi,
+									sqrt(distance::point_triangle_distance_squared_unclassified(t0_p, t0_f0, t0_f1, t0_f2)),
+									sqrt(distance::point_triangle_distance_squared_unclassified(t1_p, t1_f0, t1_f1, t1_f2)),
+									thickness);
+						};
 
-						if constexpr (print_unsafe_toi)
-							device_log("VF CCD failed : indices = {}-{}, x from {}-{},{},{} to {}-{},{},{}",
-								vid,
-								face,
-								t0_p,
-								t1_p,
-								t0_f0,
-								t0_f1,
-								t0_f2,
-								t1_f0,
-								t1_f1,
-								t1_f2);
+						// if constexpr (print_unsafe_toi)
+						// 	device_log("VF CCD failed : indices = {}-{}, x from {}-{},{},{} to {}-{},{},{}",
+						// 		vid,
+						// 		face,
+						// 		t0_p,
+						// 		t1_p,
+						// 		t0_f0,
+						// 		t0_f1,
+						// 		t0_f2,
+						// 		t1_f0,
+						// 		t1_f1,
+						// 		t1_f2);
 
 						// Float init_dist_sqr =
 						//     distance::point_triangle_distance_squared_unclassified(t0_p, t0_f0, t0_f1, t0_f2);
@@ -501,14 +519,14 @@ namespace lcs // CCD
 
 		compiler.compile<1>(
 			fn_narrow_phase_ee_ccd_query,
-			[offset_ee](Var<CDBG>	collision_data,
-				Var<Buffer<float3>> sa_x_begin,
-				Var<Buffer<float3>> sa_x_end,
-				Var<Buffer<uint2>>	sa_edges,
-				BufferVar<uint>		sa_vert_body_idx,
-				BufferVar<float>	sa_vert_d_hat, // Not relavent to d_hat
-				BufferVar<float>	sa_vert_offset,
-				Uint				dispatch_prefix)
+			[offset_ee](Var<CDBG>		  collision_data,
+				Var<Buffer<float3>>		  sa_x_begin,
+				Var<Buffer<float3>>		  sa_x_end,
+				Var<Buffer<uint2>>		  sa_edges,
+				BufferVar<VertexProperty> sa_x_property,
+				BufferVar<float>		  sa_vert_d_hat, // Not relavent to d_hat
+				BufferVar<float>		  sa_vert_offset,
+				Uint					  dispatch_prefix)
 			{
 				auto& sa_toi = collision_data->toi_per_vert;
 				auto& broadphase_count = collision_data->broad_phase_collision_count;
@@ -526,12 +544,13 @@ namespace lcs // CCD
 				const Uint2 left_edge = sa_edges.read(left);
 				const Uint2 right_edge = sa_edges.read(right);
 
+				const auto left_property = sa_x_property.read(left_edge[0]);
+				const auto right_property = sa_x_property.read(right_edge[0]);
+
 				Float toi = accd::line_search_max_t;
 				$if(left_edge[0] == right_edge[0] | left_edge[0] == right_edge[1]
 					| left_edge[1] == right_edge[0] | left_edge[1] == right_edge[1]
-					| (sa_vert_body_idx.read(left_edge[0]) != -1u									  // Is from rigid body
-						& sa_vert_body_idx.read(left_edge[0]) == sa_vert_body_idx.read(right_edge[0]) // From the same rigid body
-						))
+					| is_invalid_combo(left_property, right_property))
 				{
 					toi = accd::line_search_max_t;
 				}
@@ -559,59 +578,52 @@ namespace lcs // CCD
 					//     sa_toi->atomic(1).fetch_min(end_dist);
 					// };
 
-					$if(toi == 0.001f)
+					$if(toi<0.0f | toi> accd::line_search_max_t | toi == 0.001f)
 					{
-						device_log(
-							"EE CCD pair {} : left = {}, edge1 = {}, right = {}, edge2 = {}, TOI = {}, InitDist = {}, EndDist = {}",
-							pair_idx,
-							left,
-							left_edge,
-							right,
-							right_edge,
-							toi,
-							sqrt(distance::edge_edge_distance_squared_unclassified(ea_t0_p0, ea_t0_p1, eb_t0_p0, eb_t0_p1)),
-							sqrt(distance::edge_edge_distance_squared_unclassified(ea_t1_p0, ea_t1_p1, eb_t1_p0, eb_t1_p1)));
-
+						if constexpr (ignore_init_penetration)
 						{
+							$if(left_property->is_init_penetrated() | right_property->is_init_penetrated())
+							{
+								toi = accd::line_search_max_t;
+							};
+						}
+						else
+						{
+							Float init_Dist =
+								sqrt(distance::edge_edge_distance_squared_unclassified(ea_t0_p0, ea_t0_p1, eb_t0_p0, eb_t0_p1));
+							Float end_Dist =
+								sqrt(distance::edge_edge_distance_squared_unclassified(ea_t1_p0, ea_t1_p1, eb_t1_p0, eb_t1_p1));
+
 							auto r0 = ea_t0_p1 - ea_t0_p0;
 							auto r1 = eb_t0_p1 - eb_t0_p0;
-
 							auto len0 = distance::squared_norm(r0);
 							auto len1 = distance::squared_norm(r1);
 							auto cross_r = cross(r0, r1);
 							auto parallel_measure = distance::squared_norm(cross_r) / (len0 * len1 + 1e-8f);
-							device_log("Parallel measure = {}", parallel_measure);
+							if constexpr (print_unsafe_toi)
+								device_log("EE CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, (Gap = {}/{}) thickness = {}, parallel_measure = {}",
+									left_edge,
+									right_edge,
+									toi,
+									init_Dist,
+									end_Dist,
+									init_Dist - thickness,
+									end_Dist - thickness,
+									thickness,
+									parallel_measure);
 						}
-					};
-
-					$if(toi<0.0f | toi> accd::line_search_max_t | toi == 0.001f)
-					{
-						Float init_Dist =
-							sqrt(distance::edge_edge_distance_squared_unclassified(ea_t0_p0, ea_t0_p1, eb_t0_p0, eb_t0_p1));
-						Float end_Dist =
-							sqrt(distance::edge_edge_distance_squared_unclassified(ea_t1_p0, ea_t1_p1, eb_t1_p0, eb_t1_p1));
-						if constexpr (print_unsafe_toi)
-							device_log("EE CCD failed : indices = {}-{}, toi = {}, init_dist = {}, end_dist = {}, (Gap = {}/{}) thickness = {}",
-								left_edge,
-								right_edge,
-								toi,
-								init_Dist,
-								end_Dist,
-								init_Dist - thickness,
-								end_Dist - thickness,
-								thickness);
-						if constexpr (print_unsafe_toi)
-							device_log("EE CCD failed : indices = {}-{}, x from {},{}-{},{} to {},{}-{},{}",
-								left_edge,
-								right_edge,
-								ea_t0_p0,
-								ea_t0_p1,
-								eb_t0_p0,
-								eb_t0_p1,
-								ea_t1_p0,
-								ea_t1_p1,
-								eb_t1_p0,
-								eb_t1_p1);
+						// if constexpr (print_unsafe_toi)
+						// 	device_log("EE CCD failed : indices = {}-{}, x from {},{}-{},{} to {},{}-{},{}",
+						// 		left_edge,
+						// 		right_edge,
+						// 		ea_t0_p0,
+						// 		ea_t0_p1,
+						// 		eb_t0_p0,
+						// 		eb_t0_p1,
+						// 		ea_t1_p0,
+						// 		ea_t1_p1,
+						// 		eb_t1_p0,
+						// 		eb_t1_p1);
 
 						luisa::compute::device_assert(false, "EE CCD failed");
 						// Float init_dist_sqr =
@@ -669,7 +681,7 @@ namespace lcs // CCD
 		const Buffer<float3>&						sa_x_begin,
 		const Buffer<float3>&						sa_x_end,
 		const Buffer<uint3>&						sa_faces,
-		const Buffer<uint>&							sa_vert_affine_bodies_id,
+		const Buffer<VertexProperty>&				sa_x_property,
 		const Buffer<float>&						d_hat,
 		const Buffer<float>&						thickness)
 	{
@@ -704,7 +716,7 @@ namespace lcs // CCD
 				[&](uint curr_dispatch_size, uint dispatch_prefix)
 				{
 					stream << fn_narrow_phase_vf_ccd_query(
-						get_collision_data(), sa_x_begin, sa_x_end, sa_faces, sa_vert_affine_bodies_id, d_hat, thickness, dispatch_prefix)
+						get_collision_data(), sa_x_begin, sa_x_end, sa_faces, sa_x_property, d_hat, thickness, dispatch_prefix)
 								  .dispatch(curr_dispatch_size);
 				},
 				num_vf_broadphase);
@@ -726,7 +738,7 @@ namespace lcs // CCD
 		const Buffer<float3>&						sa_x_begin,
 		const Buffer<float3>&						sa_x_end,
 		const Buffer<uint2>&						sa_edges,
-		const Buffer<uint>&							sa_vert_affine_bodies_id,
+		const Buffer<VertexProperty>&				sa_x_property,
 		const Buffer<float>&						d_hat,
 		const Buffer<float>&						thickness)
 	{
@@ -764,7 +776,7 @@ namespace lcs // CCD
 				[&](uint curr_dispatch_size, uint dispatch_prefix)
 				{
 					stream << fn_narrow_phase_ee_ccd_query(
-						get_collision_data(), sa_x_begin, sa_x_end, sa_edges, sa_vert_affine_bodies_id, d_hat, thickness, dispatch_prefix)
+						get_collision_data(), sa_x_begin, sa_x_end, sa_edges, sa_x_property, d_hat, thickness, dispatch_prefix)
 								  .dispatch(curr_dispatch_size);
 				},
 				num_ee_broadphase);
@@ -792,7 +804,7 @@ namespace lcs // DCD
 		return mask != -1u;
 	}
 
-	void NarrowPhasesDetector::compile_dcd(AsyncCompiler& compiler, const ContactEnergyType contact_energy_type)
+	void NarrowPhasesDetector::compile_dcd(AsyncCompiler& compiler)
 	{
 		using namespace luisa::compute;
 
@@ -805,18 +817,19 @@ namespace lcs // DCD
 
 		compiler.compile<1>(
 			fn_narrow_phase_vf_dcd_query,
-			[contact_energy_type, offset_vf](Var<CDBG> collision_data,
-				BufferVar<float3>					   sa_x,
-				BufferVar<float3>					   sa_rest_x,
-				BufferVar<float>					   sa_rest_vert_area,
-				BufferVar<float>					   sa_rest_face_area,
-				BufferVar<uint3>					   sa_faces,
-				BufferVar<uint>						   sa_vert_affine_bodies_id,
-				BufferVar<float>					   sa_per_vert_d_hat,
-				BufferVar<float>					   sa_per_vert_offset,
-				Float								   kappa,
-				Uint								   max_count,
-				Uint								   dispatch_prefix)
+			[offset_vf](Var<CDBG>		  collision_data,
+				BufferVar<float3>		  sa_x,
+				BufferVar<float3>		  sa_rest_x,
+				BufferVar<float>		  sa_rest_vert_area,
+				BufferVar<float>		  sa_rest_face_area,
+				BufferVar<uint3>		  sa_faces,
+				BufferVar<VertexProperty> sa_x_property,
+				BufferVar<float>		  sa_per_vert_d_hat,
+				BufferVar<float>		  sa_per_vert_offset,
+				Float					  kappa,
+				Uint					  contact_energy_type,
+				Uint					  max_count,
+				Uint					  dispatch_prefix)
 			{
 				auto& broadphase_count = collision_data->broad_phase_collision_count;
 				auto& broadphase_list = collision_data->broad_phase_list_vf;
@@ -834,9 +847,11 @@ namespace lcs // DCD
 				const Uint	fid = broadphase_list->read(2 * pair_idx + 1);
 				const Uint3 face = sa_faces.read(fid);
 
+				const auto left_property = sa_x_property.read(vid);
+				const auto right_property = sa_x_property.read(face[0]);
+
 				$if(vid == face[0] | vid == face[1] | vid == face[2]
-					| (sa_vert_affine_bodies_id.read(vid) != -1u
-						& sa_vert_affine_bodies_id.read(vid) == sa_vert_affine_bodies_id.read(face[0])))
+					| is_invalid_combo(left_property, right_property))
 				{
 				}
 				$else
@@ -862,13 +877,25 @@ namespace lcs // DCD
 
 					$if(d2 < square_scalar(thickness))
 					{
-						device_log("Exist penetration in DCD VF pair {}-{} : d = {}, thickness = {}",
-							vid,
-							face,
-							sqrt_scalar(d2),
-							thickness);
-						collision_data.toi_per_vert.atomic(0).fetch_min(0.0f);
-						device_assert(false, "NaN/INF stiffness in DCD VF pair");
+						if constexpr (ignore_init_penetration)
+						{
+							Uint4 indices = make_uint4(vid, face[0], face[1], face[2]);
+							for (uint ii = 0; ii < 4; ii++)
+							{
+								auto vert_property = sa_x_property.read(indices[ii]);
+								vert_property->set_is_init_penetrated();
+								sa_x_property.write(indices[ii], vert_property);
+							}
+							contact_energy_type = uint(ContactEnergyType::Quadratic);
+						}
+						else
+						{
+							device_log("Exist penetration in DCD VF pair {}-{} : d = {}, thickness = {}",
+								vid,
+								face,
+								sqrt_scalar(d2),
+								thickness);
+						}
 					};
 
 					$if(d2 < square_scalar(thickness + d_hat)
@@ -898,14 +925,14 @@ namespace lcs // DCD
 								// luisa::compute::device_log("VF pair: with diff = {}, normal = {}, d = {}, proj = {}, C = {}, stiff = {} (area = {}) bary = {}", x, normal, d, dot_vec(normal, x), C, stiff, avg_area, bary);
 							}
 
-							if (contact_energy_type == ContactEnergyType::Quadratic)
+							$if(contact_energy_type == uint(ContactEnergyType::Quadratic))
 							{
 								Float C = (d - thickness) - d_hat;
 								Float stiff = avg_area * kappa;
 								k1 = stiff * C;
 								k2 = stiff;
 							}
-							else if (contact_energy_type == ContactEnergyType::Barrier)
+							$elif(contact_energy_type == uint(ContactEnergyType::Barrier))
 							{
 								// Float dBdD;
 								// Float ddBddD;
@@ -916,7 +943,7 @@ namespace lcs // DCD
 								// normal = 2.0f * x;  // Scaled by d(d2)/d(d) = 2d
 								k1 = avg_area * kappa * ipc::barrier_first_derivative(d - thickness, d_hat);
 								k2 = avg_area * kappa * ipc::barrier_second_derivative(d - thickness, d_hat);
-							}
+							};
 
 							$if(is_nan_scalar(k1) | is_nan_scalar(k2) | is_inf_scalar(k1) | is_inf_scalar(k2))
 							{
@@ -963,17 +990,18 @@ namespace lcs // DCD
 
 		compiler.compile<1>(
 			fn_narrow_phase_ee_dcd_query,
-			[contact_energy_type, offset_ee](Var<CDBG> collision_data,
-				BufferVar<float3>					   sa_x,
-				BufferVar<float3>					   sa_rest_x,
-				BufferVar<float>					   sa_rest_edge_area,
-				BufferVar<uint2>					   sa_edges,
-				BufferVar<uint>						   sa_vert_affine_bodies_id,
-				BufferVar<float>					   sa_per_vert_d_hat,
-				BufferVar<float>					   sa_per_vert_offset,
-				Float								   kappa,
-				Uint								   max_count,
-				Uint								   dispatch_prefix)
+			[offset_ee](Var<CDBG>		  collision_data,
+				BufferVar<float3>		  sa_x,
+				BufferVar<float3>		  sa_rest_x,
+				BufferVar<float>		  sa_rest_edge_area,
+				BufferVar<uint2>		  sa_edges,
+				BufferVar<VertexProperty> sa_x_property,
+				BufferVar<float>		  sa_per_vert_d_hat,
+				BufferVar<float>		  sa_per_vert_offset,
+				Float					  kappa,
+				Uint					  contact_energy_type,
+				Uint					  max_count,
+				Uint					  dispatch_prefix)
 			{
 				auto& broadphase_count = collision_data->broad_phase_collision_count;
 				auto& broadphase_list = collision_data->broad_phase_list_ee;
@@ -991,10 +1019,13 @@ namespace lcs // DCD
 				const Uint	right = broadphase_list->read(2 * pair_idx + 1);
 				const Uint2 left_edge = sa_edges.read(left);
 				const Uint2 right_edge = sa_edges.read(right);
+
+				const auto left_property = sa_x_property.read(left_edge[0]);
+				const auto right_property = sa_x_property.read(right_edge[0]);
+
 				$if(left_edge[0] == right_edge[0] | left_edge[0] == right_edge[1]
 					| left_edge[1] == right_edge[0] | left_edge[1] == right_edge[1]
-					| (sa_vert_affine_bodies_id.read(left_edge[0]) != -1u
-						& sa_vert_affine_bodies_id.read(left_edge[0]) == sa_vert_affine_bodies_id.read(right_edge[0])))
+					| is_invalid_combo(left_property, right_property))
 				{
 				}
 				$else
@@ -1021,13 +1052,25 @@ namespace lcs // DCD
 
 					$if(d2 < square_scalar(thickness))
 					{
-						device_log("Exist penetration in DCD EE pair {}-{} : d = {}, thickness = {}",
-							left_edge,
-							right_edge,
-							sqrt_scalar(d2),
-							thickness);
-						collision_data.toi_per_vert.atomic(0).fetch_min(0.0f);
-						device_assert(false, "NaN/INF stiffness in DCD EE pair");
+						if constexpr (ignore_init_penetration)
+						{
+							Uint4 indices = make_uint4(left_edge[0], left_edge[1], right_edge[0], right_edge[1]);
+							for (uint ii = 0; ii < 4; ii++)
+							{
+								auto vert_property = sa_x_property.read(indices[ii]);
+								vert_property->set_is_init_penetrated();
+								sa_x_property.write(indices[ii], vert_property);
+							}
+							contact_energy_type = uint(ContactEnergyType::Quadratic);
+						}
+						else
+						{
+							device_log("Exist penetration in DCD EE pair {}-{} : d = {}, thickness = {}",
+								left_edge,
+								right_edge,
+								sqrt_scalar(d2),
+								thickness);
+						}
 					};
 
 					$if(d2 < square_scalar(thickness + d_hat)
@@ -1057,14 +1100,14 @@ namespace lcs // DCD
 								// luisa::compute::device_log("EE pair: with diff = {}, normal = {}, d = {}, proj = {}, C = {}, stiff = {} (area = {}) bary = {}", x, normal, d, dot_vec(normal, x), C, stiff, avg_area, bary);
 							}
 
-							if (contact_energy_type == ContactEnergyType::Quadratic)
+							$if(contact_energy_type == uint(ContactEnergyType::Quadratic))
 							{
 								Float C = (d - thickness) - d_hat;
 								Float stiff = kappa * avg_area;
 								k1 = stiff * C;
 								k2 = stiff;
 							}
-							else if (contact_energy_type == ContactEnergyType::Barrier)
+							$elif(contact_energy_type == uint(ContactEnergyType::Barrier))
 							{
 								// Float dBdD;
 								// Float ddBddD;
@@ -1075,7 +1118,7 @@ namespace lcs // DCD
 								// normal = 2.0f * x;
 								k1 = avg_area * kappa * ipc::barrier_first_derivative(d - thickness, d_hat);
 								k2 = avg_area * kappa * ipc::barrier_second_derivative(d - thickness, d_hat);
-							}
+							};
 
 							$if(is_nan_scalar(k1) | is_nan_scalar(k2) | is_inf_scalar(k1) | is_inf_scalar(k2))
 							{
@@ -1136,7 +1179,7 @@ namespace lcs // DCD
 		const Buffer<float>&								  sa_rest_vert_area,
 		const Buffer<float>&								  sa_rest_face_area,
 		const Buffer<uint3>&								  sa_faces,
-		const Buffer<uint>&									  sa_vert_affine_bodies_id,
+		const Buffer<VertexProperty>&						  sa_x_property,
 		const Buffer<float>&								  d_hat,
 		const Buffer<float>&								  thickness,
 		const float											  kappa)
@@ -1144,6 +1187,13 @@ namespace lcs // DCD
 		auto&	   host_count = host_collision_data->broad_phase_collision_count;
 		const uint num_vf_broadphase = host_count[collision_data->get_vf_count_offset()];
 		const uint max_pairs = collision_data->narrow_phase_list.size();
+		const uint contact_energy_type = uint(get_scene_params().contact_energy_type);
+
+		const bool is_first_iter = get_scene_params().current_nonlinear_iter == 0;
+		if (is_first_iter)
+		{
+			stream << fn_reset_vertex_property(sa_x_property).dispatch(sa_x_property.size());
+		}
 
 		if (num_vf_broadphase != 0)
 		{
@@ -1156,10 +1206,11 @@ namespace lcs // DCD
 						sa_rest_vert_area,
 						sa_rest_face_area,
 						sa_faces,
-						sa_vert_affine_bodies_id,
+						sa_x_property,
 						d_hat,
 						thickness,
 						kappa,
+						contact_energy_type,
 						max_pairs,
 						dispatch_prefix)
 								  .dispatch(curr_dispatch_size);
@@ -1172,7 +1223,7 @@ namespace lcs // DCD
 		const Buffer<float3>&								  sa_rest_x,
 		const Buffer<float>&								  sa_rest_edge_area,
 		const Buffer<uint2>&								  sa_edges,
-		const Buffer<uint>&									  sa_vert_affine_bodies_id,
+		const Buffer<VertexProperty>&						  sa_x_property,
 		const Buffer<float>&								  d_hat,
 		const Buffer<float>&								  thickness,
 		const float											  kappa)
@@ -1180,6 +1231,7 @@ namespace lcs // DCD
 		auto&	   host_count = host_collision_data->broad_phase_collision_count;
 		const uint num_ee_broadphase = host_count[collision_data->get_ee_count_offset()];
 		const uint max_pairs = collision_data->narrow_phase_list.size();
+		const uint contact_energy_type = uint(get_scene_params().contact_energy_type);
 
 		if (num_ee_broadphase != 0)
 		{
@@ -1191,10 +1243,11 @@ namespace lcs // DCD
 						sa_rest_x,
 						sa_rest_edge_area,
 						sa_edges,
-						sa_vert_affine_bodies_id,
+						sa_x_property,
 						d_hat,
 						thickness,
 						kappa,
+						contact_energy_type,
 						max_pairs,
 						dispatch_prefix)
 								  .dispatch(curr_dispatch_size);
@@ -1208,7 +1261,7 @@ namespace lcs // DCD
 namespace lcs // Friction
 {
 
-	void NarrowPhasesDetector::compile_friction(AsyncCompiler& compiler, const ContactEnergyType contact_energy_type)
+	void NarrowPhasesDetector::compile_friction(AsyncCompiler& compiler)
 	{
 		using namespace luisa::compute;
 
@@ -1217,15 +1270,15 @@ namespace lcs // Friction
 		// Only process friction part
 		compiler.compile<1>(
 			fn_process_collision_pair_friction,
-			[contact_energy_type](Var<CDBG> collision_data,
-				BufferVar<float3>			sa_x,
-				BufferVar<float3>			sa_x_step_start,
-				BufferVar<float>			sa_vert_friction_mu,
-				BufferVar<float>			per_vert_d_hat,
-				BufferVar<float>			per_vert_offset,
-				Float						min_dx,
-				Float						kappa,
-				Bool						is_first_iter)
+			[](Var<CDBG>		  collision_data,
+				BufferVar<float3> sa_x,
+				BufferVar<float3> sa_x_step_start,
+				BufferVar<float>  sa_vert_friction_mu,
+				BufferVar<float>  per_vert_d_hat,
+				BufferVar<float>  per_vert_offset,
+				Float			  min_dx,
+				Float			  kappa,
+				Bool			  is_first_iter)
 			{
 				auto&	   narrowphase_list = collision_data->narrow_phase_list;
 				const Uint pair_idx = dispatch_x();
@@ -2420,12 +2473,12 @@ namespace lcs // Compute Contact Gradient & Hessian & Assemble
 				{
 					Float3 delta = weight[0] * sa_x.read(indices[0]) + weight[1] * sa_x.read(indices[1])
 						+ weight[2] * sa_x.read(indices[2]) + weight[3] * sa_x.read(indices[3]);
-					device_log("Pair {} has NaN/Inf gradient: k1/k2 = {}/ {}, normal = {}, dist = {}, delta = {}",
+					device_log("Pair {} has NaN/Inf gradient: k1/k2 = {}/{}, dist = {}, indices = {}, delta = {}",
 						pair_idx,
 						k1,
 						k2,
-						normal,
 						length(delta),
+						indices,
 						delta);
 				};
 
@@ -2834,19 +2887,20 @@ namespace lcs // Compute Contact Gradient & Hessian & Assemble
 namespace lcs // Compute Contact Energy
 {
 
-	void NarrowPhasesDetector::compile_energy(AsyncCompiler& compiler, const ContactEnergyType contact_energy_type)
+	void NarrowPhasesDetector::compile_energy(AsyncCompiler& compiler)
 	{
 		using namespace luisa::compute;
 
 		compiler.compile<1>(
 			fn_compute_repulsion_energy,
-			[contact_energy_type](Var<CDBG> collision_data,
-				Var<BufferView<float3>>		sa_x,
-				Var<BufferView<float3>>		sa_x_step_start,
-				Var<BufferView<float>>		per_vert_d_hat,
-				Var<BufferView<float>>		per_vert_offset,
-				Var<BufferView<float>>		sa_vert_friction_mu,
-				Float						kappa)
+			[](Var<CDBG>				collision_data,
+				Var<BufferView<float3>> sa_x,
+				Var<BufferView<float3>> sa_x_step_start,
+				Var<BufferView<float>>	per_vert_d_hat,
+				Var<BufferView<float>>	per_vert_offset,
+				Var<BufferView<float>>	sa_vert_friction_mu,
+				Float					kappa,
+				Uint					contact_energy_type)
 			{
 				auto& contact_energy = collision_data->contact_energy;
 				auto& narrowphase_list = collision_data->narrow_phase_list;
@@ -2878,15 +2932,15 @@ namespace lcs // Compute Contact Energy
 					$if(d2 < square_scalar(thickness + d_hat))
 					{
 						const Float stiff = pair->get_area() * kappa;
-						if (contact_energy_type == ContactEnergyType::Quadratic)
+						$if(contact_energy_type == uint(ContactEnergyType::Quadratic))
 						{
 							Float C = d - thickness - d_hat;
 							energy_repulsion = 0.5f * stiff * C * C;
 						}
-						else if (contact_energy_type == ContactEnergyType::Barrier)
+						$elif(contact_energy_type == uint(ContactEnergyType::Barrier))
 						{
 							energy_repulsion = stiff * ipc::barrier(d - thickness, d_hat);
-						}
+						};
 					};
 				};
 
@@ -2953,10 +3007,11 @@ namespace lcs // Compute Contact Energy
 		auto&	   contact_energy = collision_data->contact_energy;
 		auto&	   host_count = host_collision_data->narrow_phase_collision_count;
 		const uint num_pairs = host_count.front();
+		const uint contact_energy_type = uint(get_scene_params().contact_energy_type);
 
 		if (num_pairs != 0)
 		{
-			stream << fn_compute_repulsion_energy(get_collision_data(), sa_x, sa_x_step_start, d_hat, thickness, friction_mu, kappa)
+			stream << fn_compute_repulsion_energy(get_collision_data(), sa_x, sa_x_step_start, d_hat, thickness, friction_mu, kappa, contact_energy_type)
 						  .dispatch(num_pairs)
 				// << contact_energy.view(2, 1).copy_to(host_contact_energy.data() + 2)
 				;

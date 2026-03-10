@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Core/affine_position.h"
 #include "SimulationCore/simulation_type.h"
 #include "luisa/core/basic_types.h"
 #include <vector>
@@ -16,12 +17,6 @@ namespace lcs
 		{
 			uint				 vertex_id;
 			std::array<float, 3> translation;
-		};
-		struct PerBodyAnimation
-		{
-			uint				 body_id;
-			std::array<float, 3> translation;
-			std::array<float, 4> rotation;
 
 			void set_translation(const float x, const float y, const float z)
 			{
@@ -29,19 +24,43 @@ namespace lcs
 				translation[1] = y;
 				translation[2] = z;
 			}
-			void set_rotation(const float axis_x, const float axis_y, const float axis_z, const float angle_w)
+		};
+		struct PerBodyAnimation
+		{
+			uint				 dof_start;
+			std::array<float, 3> translation;
+			std::array<float, 3> rotation;
+			std::array<float, 3> scale;
+
+			void set_translation(const float x, const float y, const float z)
+			{
+				translation[0] = x;
+				translation[1] = y;
+				translation[2] = z;
+			}
+			void set_rotation(const float axis_x, const float axis_y, const float axis_z)
 			{
 				rotation[0] = axis_x;
 				rotation[1] = axis_y;
 				rotation[2] = axis_z;
-				rotation[3] = angle_w;
+				// rotation[3] = angle_w;
+			}
+			void set_scale(const float x, const float y, const float z)
+			{
+				scale[0] = x;
+				scale[1] = y;
+				scale[2] = z;
 			}
 			float4x4 to_transform_matrix() const
 			{
-				auto trans = luisa::translation(translation[0], translation[1], translation[2]);
-				auto rot = luisa::rotation(rotation[0], rotation[1], rotation[2], rotation[3]);
-				// auto scale = identity();
-				return trans * rot;
+				// auto trans = luisa::translation(translation[0], translation[1], translation[2]);
+				// auto rot = luisa::rotation(rotation[0], rotation[1], rotation[2], rotation[3]);
+				// auto scale = luisa::float3x3::eye(1.0f);
+				// return trans * rot;
+				return lcs::make_model_matrix(
+					luisa::make_float3(translation[0], translation[1], translation[2]),
+					luisa::make_float3(rotation[0], rotation[1], rotation[2]),
+					luisa::make_float3(scale[0], scale[1], scale[2]));
 			}
 			// std::array<float, 4> rotation;  // quaternion
 			// std::array<float, 3> scale;
@@ -99,6 +118,7 @@ namespace lcs
 		BufferType<float> sa_vert_mass_inv;
 		BufferType<uint>  sa_is_fixed; // TODO: uchar
 		BufferType<uint>  sa_vert_mesh_type;
+		BufferType<uint>  sa_global_vid_to_local_vid;
 		// BufferType<uint>  sa_vert_is_on_surface; // For collision detection on surface
 
 		BufferType<uint> sa_vert_mesh_id;

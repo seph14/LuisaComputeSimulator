@@ -293,7 +293,8 @@ namespace lcs
 			fn_pcg_spmv_offdiag_block_rbk,
 			[](Var<luisa::compute::Buffer<MatrixTriplet3x3>> sa_cgA_offdiag_triplet,
 				Var<luisa::compute::Buffer<float3>>			 sa_input_vec,
-				Var<luisa::compute::Buffer<float3>>			 sa_output_vec)
+				Var<luisa::compute::Buffer<float3>>			 sa_output_vec,
+				Var<bool>									 use_symmetry)
 			{
 				const Uint triplet_idx = dispatch_x();
 				const Uint threadIdx = triplet_idx % 256;
@@ -401,15 +402,27 @@ namespace lcs
 					};
 					const Float3 sum_contrib = curr_prefix - target_block_prefix + contrib;
 					device_assert(!is_nan_vec(sum_contrib), "Error NaN detected in SpMV block rbk!");
-					$if(MatrixTriplet::write_use_atomic(matrix_property))
+					$if(use_symmetry)
 					{
 						sa_output_vec.atomic(vid).x.fetch_add(sum_contrib.x);
 						sa_output_vec.atomic(vid).y.fetch_add(sum_contrib.y);
 						sa_output_vec.atomic(vid).z.fetch_add(sum_contrib.z);
+						sa_output_vec.atomic(adj_vid).x.fetch_add(contrib.x);
+						sa_output_vec.atomic(adj_vid).y.fetch_add(contrib.y);
+						sa_output_vec.atomic(adj_vid).z.fetch_add(contrib.z);
 					}
 					$else
 					{
-						sa_output_vec.write(vid, sa_output_vec.read(vid) + sum_contrib);
+						$if(MatrixTriplet::write_use_atomic(matrix_property))
+						{
+							sa_output_vec.atomic(vid).x.fetch_add(sum_contrib.x);
+							sa_output_vec.atomic(vid).y.fetch_add(sum_contrib.y);
+							sa_output_vec.atomic(vid).z.fetch_add(sum_contrib.z);
+						}
+						$else
+						{
+							sa_output_vec.write(vid, sa_output_vec.read(vid) + sum_contrib);
+						};
 					};
 				};
 			});
@@ -419,9 +432,9 @@ namespace lcs
 		{
 			const Uint vid = dispatch_id().x;
 			Float3	   new_dx;
-			const Uint map_info = sa_x_to_dof_map->read(vid);
-			const Uint mapped_dof = map_info & Attributions::RIGID_BODY_MASK;
-			$if((map_info & Attributions::RIGID_BODY_FLAG) == 0) // Soft body
+			const auto map_info = sa_x_to_dof_map->read(vid);
+			const Uint mapped_dof = map_info->get_dof_idx();
+			$if(map_info->is_soft_body()) // Soft body
 			{
 				new_dx = input_q->read(mapped_dof);
 			}
@@ -497,18 +510,17 @@ namespace lcs
 				fn_predict_position,
 				[sa_q_step_start = sim_data->sa_q_step_start.view(), // Input
 					sa_q_v = sim_data->sa_q_v.view(),				 // Input
-					//  sa_q            = sim_data->sa_q.view(),             // Output
-					//  sa_q_iter_start = sim_data->sa_q_iter_start.view(),  // Output
-					sa_q_tilde = sim_data->sa_q_tilde.view(),	   // Output
-					sa_is_fixed = sim_data->sa_q_is_fixed.view(),  // Constant
-					sa_q_property = sim_data->sa_q_property.view() // Constant
+					sa_q_tilde = sim_data->sa_q_tilde.view(),		 // Output
+					sa_is_fixed = sim_data->sa_q_is_fixed.view(),	 // Constant
+					sa_q_property = sim_data->sa_q_property.view()	 // Constant
 			](const Float substep_dt, const Float3 gravity)
 				{
 					const UInt vid = dispatch_id().x;
-					const UInt property = sa_q_property->read(vid);
-					const Bool is_fixed = sa_is_fixed->read(vid);
-					const Bool is_rigid = (property & Attributions::RIGID_BODY_FLAG) != 0;
-					const Bool is_translation_dof = (property & Attributions::ABD_Is_Translation_DOF) != 0;
+					const auto property = sa_q_property->read(vid);
+					// const Bool is_fixed = sa_is_fixed->read(vid);
+					const Bool is_rigid = property->is_rigid();
+					const Bool is_translation_dof = property->is_translation_dof();
+					const Bool is_fixed = property->is_fixed();
 
 					Float3 x_prev = sa_q_step_start->read(vid);
 					Float3 v_prev = sa_q_v->read(vid);
@@ -578,9 +590,6 @@ namespace lcs
 		using namespace luisa::compute;
 
 		// const Uint vid         = dispatch_x();
-		const Uint curr_prefix = sa_vert_adj_material_force_verts_csr->read(vid);
-		const Uint next_prefix = sa_vert_adj_material_force_verts_csr->read(vid + 1);
-
 		const Uint curr_prefix_bending = vert_adj_constraints_csr->read(vid);
 		const Uint next_prefix_bending = vert_adj_constraints_csr->read(vid + 1);
 
@@ -606,21 +615,133 @@ namespace lcs
 			}
 
 			const Float3   grad = constaint_gradients->read(adj_eid * N + offset);
-			const Float3x3 diag_hess = constaint_hessians->read(adj_eid * (N * N) + offset);
+			const Float3x3 diag_hess = constaint_hessians->read(adj_eid * (N * N) + offset * N + offset);
 
 			buffer_add(sa_cgB, vid, -grad);
 			buffer_add(sa_cgA_diag, vid, diag_hess);
 
-			const uint N_off = N - 1;
-			for (uint ii = 0; ii < N_off; ii++) // For each off-diagonal in curr row
+			if constexpr (N > 1)
 			{
-				Float3x3 offdiag_hess = constaint_hessians->read(adj_eid * (N * N) + N + offset * N_off + ii);
-				Uint	 offdiag_offset = constaint_offsets_in_adjlist->read(adj_eid * (N * N_off) + offset * N_off + ii);
-				auto	 triplet = sa_cgA_offdiag_triplet->read(curr_prefix + offdiag_offset);
-				add_triplet_matrix(triplet, offdiag_hess);
-				sa_cgA_offdiag_triplet->write(curr_prefix + offdiag_offset, triplet);
+				const uint N_off = N - 1;
+				for (uint jj = 0; jj < N; jj++) // For each off-diagonal in curr row (row-major)
+				{
+					$if(jj != offset)
+					{
+						Uint	 expected_adj_vid = edge[jj];
+						Float3x3 offdiag_hess = constaint_hessians->read(adj_eid * (N * N) + offset * N + jj);
+						Uint	 offdiag_slot = ite(jj < offset, UInt(jj), UInt(jj - 1u));
+						Uint	 triplet_idx =
+							constaint_offsets_in_adjlist->read(adj_eid * (N * N_off) + offset * N_off + offdiag_slot);
+						auto	   triplet = sa_cgA_offdiag_triplet->read(triplet_idx);
+						const Bool pair_match =
+							((triplet->get_row_idx() == vid) & (triplet->get_col_idx() == expected_adj_vid))
+							| ((triplet->get_row_idx() == expected_adj_vid) & (triplet->get_col_idx() == vid));
+						device_assert(pair_match,
+							"Error in assembly: triplet index does not match expected (vid, adj_vid) pair.");
+						add_triplet_matrix(triplet, offdiag_hess);
+						sa_cgA_offdiag_triplet->write(triplet_idx, triplet);
+					};
+				}
 			}
 		};
+	};
+
+	template <typename T>
+	void assembly_template4(const luisa::compute::Var<uint> parallel_idx,
+		const luisa::compute::Var<T>&						constraints,
+		const luisa::compute::BufferView<uint>&				sa_vert_adj_material_force_verts_csr,
+		const luisa::compute::BufferView<float3>&			sa_cgB,
+		const luisa::compute::BufferView<float3x3>&			sa_cgA_diag,
+		const luisa::compute::BufferView<MatrixTriplet3x3>& sa_cgA_offdiag_triplet,
+		const luisa::compute::Var<uint>						prefix_dof)
+	{
+		constexpr uint N = T::get_num_verts_per_constaint();
+
+		auto& vert_adj_constraints_csr = constraints.vert_adj_constraints_csr;
+		auto& constraint_gradients = constraints.constraint_gradients;
+		auto& constraint_hessians = constraints.constraint_hessians;
+		auto& constraint_offsets_in_adjlist = constraints.constraint_offsets_in_adjlist;
+		auto& constraint_indices = constraints.constraint_indices;
+
+		using namespace luisa::compute;
+
+		if constexpr (N == 1)
+		{
+			const Uint vid = prefix_dof + parallel_idx;
+			const Uint curr_prefix = vert_adj_constraints_csr->read(vid);
+			const Uint next_prefix = vert_adj_constraints_csr->read(vid + 1);
+
+			$for(j, curr_prefix, next_prefix)
+			{
+				const Uint	   adj_eid = vert_adj_constraints_csr->read(j);
+				const Float3   grad = constraint_gradients->read(adj_eid);
+				const Float3x3 diag_hess = constraint_hessians->read(adj_eid);
+
+				sa_cgB->atomic(vid)[0].fetch_add(-grad[0]);
+				sa_cgB->atomic(vid)[1].fetch_add(-grad[1]);
+				sa_cgB->atomic(vid)[2].fetch_add(-grad[2]);
+
+				sa_cgA_diag->atomic(vid)[0][0].fetch_add(diag_hess[0][0]);
+				sa_cgA_diag->atomic(vid)[0][1].fetch_add(diag_hess[0][1]);
+				sa_cgA_diag->atomic(vid)[0][2].fetch_add(diag_hess[0][2]);
+				sa_cgA_diag->atomic(vid)[1][0].fetch_add(diag_hess[1][0]);
+				sa_cgA_diag->atomic(vid)[1][1].fetch_add(diag_hess[1][1]);
+				sa_cgA_diag->atomic(vid)[1][2].fetch_add(diag_hess[1][2]);
+				sa_cgA_diag->atomic(vid)[2][0].fetch_add(diag_hess[2][0]);
+				sa_cgA_diag->atomic(vid)[2][1].fetch_add(diag_hess[2][1]);
+				sa_cgA_diag->atomic(vid)[2][2].fetch_add(diag_hess[2][2]);
+			};
+		}
+		else
+		{
+			constexpr uint N_row_off = N - 1u;
+			constexpr uint N_off = N * N_row_off;
+
+			const Uint adj_eid = parallel_idx / N_off;
+			const Uint slot = parallel_idx - adj_eid * N_off;
+			const Uint row_local = slot / N_row_off;
+			const Uint offdiag_slot = slot - row_local * N_row_off;
+
+			const auto edge = constraint_indices->read(adj_eid);
+			const Uint vid = edge[row_local];
+			const Uint jj = ite(offdiag_slot < row_local, offdiag_slot, offdiag_slot + 1u);
+			const Uint adj_vid = edge[jj];
+
+			$if(offdiag_slot == 0u)
+			{
+				const Float3   grad = constraint_gradients->read(adj_eid * N + row_local);
+				const Float3x3 diag_hess =
+					constraint_hessians->read(adj_eid * (N * N) + row_local * N + row_local);
+
+				sa_cgB->atomic(vid)[0].fetch_add(-grad[0]);
+				sa_cgB->atomic(vid)[1].fetch_add(-grad[1]);
+				sa_cgB->atomic(vid)[2].fetch_add(-grad[2]);
+
+				sa_cgA_diag->atomic(vid)[0][0].fetch_add(diag_hess[0][0]);
+				sa_cgA_diag->atomic(vid)[0][1].fetch_add(diag_hess[0][1]);
+				sa_cgA_diag->atomic(vid)[0][2].fetch_add(diag_hess[0][2]);
+				sa_cgA_diag->atomic(vid)[1][0].fetch_add(diag_hess[1][0]);
+				sa_cgA_diag->atomic(vid)[1][1].fetch_add(diag_hess[1][1]);
+				sa_cgA_diag->atomic(vid)[1][2].fetch_add(diag_hess[1][2]);
+				sa_cgA_diag->atomic(vid)[2][0].fetch_add(diag_hess[2][0]);
+				sa_cgA_diag->atomic(vid)[2][1].fetch_add(diag_hess[2][1]);
+				sa_cgA_diag->atomic(vid)[2][2].fetch_add(diag_hess[2][2]);
+			};
+
+			const Float3x3 offdiag_hess =
+				constraint_hessians->read(adj_eid * (N * N) + row_local * N + jj);
+			const Uint triplet_idx =
+				constraint_offsets_in_adjlist->read(adj_eid * N_off + row_local * N_row_off + offdiag_slot);
+
+			auto	   triplet = sa_cgA_offdiag_triplet->read(triplet_idx);
+			const Bool pair_match =
+				((triplet->get_row_idx() == vid) & (triplet->get_col_idx() == adj_vid))
+				| ((triplet->get_row_idx() == adj_vid) & (triplet->get_col_idx() == vid));
+			device_assert(pair_match,
+				"Error in assembly: triplet index does not match expected (vid, adj_vid) pair.");
+
+			atomic_add_triplet_matrix(sa_cgA_offdiag_triplet, triplet_idx, offdiag_hess);
+		}
 	};
 
 	void NewtonSolver::compile_assembly(AsyncCompiler& compiler, const luisa::compute::ShaderOption& default_option)
@@ -634,7 +755,13 @@ namespace lcs
 				sa_cgA_offdiag_triplet = sim_data->sa_cgA_fixtopo_offdiag_triplet.view()](const auto& constraint,
 				const Uint																			  prefix_dof)
 		{
-			assembly_template3(prefix_dof + dispatch_x(), constraint, sa_vert_adj_material_force_verts_csr, sa_cgB, sa_cgA_diag, sa_cgA_offdiag_triplet);
+			assembly_template4(dispatch_x(),
+				constraint,
+				sa_vert_adj_material_force_verts_csr,
+				sa_cgB,
+				sa_cgA_diag,
+				sa_cgA_offdiag_triplet,
+				prefix_dof);
 		};
 
 		// Assembly
@@ -719,15 +846,13 @@ namespace lcs
 				sa_q_tilde = std::span(host_sim_data->sa_q_tilde),
 				sa_q_step_start = std::span(host_sim_data->sa_q_step_start),
 				sa_q_property = std::span(host_sim_data->sa_q_property),
-				sa_q_is_fixed = std::span(host_sim_data->sa_q_is_fixed),
 				substep_dt = get_scene_params().get_substep_dt(),
 				gravity = get_scene_params().gravity](const uint vid)
 			{
-				const uint dof_property = sa_q_property[vid];
-				const bool is_fixed = sa_q_is_fixed[vid];
-				const bool is_rigid = (dof_property & Attributions::RIGID_BODY_FLAG) != 0;
-				const bool is_translation_dof =
-					(dof_property & Attributions::ABD_Is_Translation_DOF) != 0;
+				const auto dof_property = sa_q_property[vid];
+				const bool is_rigid = dof_property.is_rigid();
+				const bool is_translation_dof = dof_property.is_translation_dof();
+				const bool is_fixed = dof_property.is_fixed();
 
 				float3 x_prev = sa_q_step_start[vid];
 				float3 v_prev = sa_q_v[vid];
@@ -1724,7 +1849,7 @@ namespace lcs
 			});
 
 		const float error = (cgB - cgA * cgX).norm();
-		LUISA_INFO("  In newton iter {:2}, EigenSolve error = {:7.6f}, max_element(p) = {:6.5f}",
+		LUISA_INFO("  In newton iter {:2}, EigenSolve error = {:.3e}, max_element(p) = {:6.5f}",
 			get_scene_params().current_nonlinear_iter,
 			error,
 			fast_infinity_norm(host_sim_data->sa_cgX));
@@ -1750,9 +1875,6 @@ namespace lcs
 		auto& constaint_hessians = constaints.get_constraint_hessians();
 		auto& constaint_offsets_in_adjlist = constaints.get_constraint_offsets_in_adjlist();
 		auto& indices = constaints.get_indices();
-
-		const uint curr_prefix = sa_vert_adj_material_force_verts_csr[vid];
-		const uint next_prefix = sa_vert_adj_material_force_verts_csr[vid + 1];
 
 		const uint curr_prefix_bending = vert_adj_constraints_csr[vid];
 		const uint next_prefix_bending = vert_adj_constraints_csr[vid + 1];
@@ -1795,7 +1917,7 @@ namespace lcs
 			// LUISA_ASSERT(offset != -1u, "Error in assembly: offset not found.");
 
 			const float3&	grad = constaint_gradients[adj_eid * N + offset];
-			const float3x3& diag_hess = constaint_hessians[adj_eid * (N * N) + offset];
+			const float3x3& diag_hess = constaint_hessians[adj_eid * (N * N) + offset * N + offset];
 
 			if (is_nan_vec(grad) || is_inf_vec(grad))
 			{
@@ -1812,19 +1934,38 @@ namespace lcs
 			if constexpr (N != 1)
 			{
 				constexpr uint N_off = N - 1;
-				for (uint ii = 0; ii < N_off; ii++) // For each off-diagonal in curr row
+				uint		   offdiag_slot = 0;
+				for (uint jj = 0; jj < N; jj++) // For each off-diagonal in curr row (row-major)
 				{
-					float3x3 offdiag_hess = constaint_hessians[adj_eid * (N * N) + N + offset * N_off + ii];
-					uint	 offdiag_offset = constaint_offsets_in_adjlist[adj_eid * (N * N_off) + offset * N_off + ii];
-					uint	 triplet_idx = curr_prefix + offdiag_offset;
+					if (jj == offset)
+					{
+						continue;
+					}
+					const uint expected_adj_vid = edge[jj];
+					float3x3   offdiag_hess = constaint_hessians[adj_eid * (N * N) + offset * N + jj];
+					uint	   triplet_idx =
+						constaint_offsets_in_adjlist[adj_eid * (N * N_off) + offset * N_off + offdiag_slot];
 					if (triplet_idx >= sa_cgA_offdiag_triplet.size())
 					{
 						LUISA_ERROR("Error in assembly: triplet_idx {} out of range (size = {})",
 							triplet_idx,
 							sa_cgA_offdiag_triplet.size());
 					}
-					auto& triplet = sa_cgA_offdiag_triplet[curr_prefix + offdiag_offset];
+					auto&	   triplet = sa_cgA_offdiag_triplet[triplet_idx];
+					const bool pair_match =
+						(triplet.get_row_idx() == vid && triplet.get_col_idx() == expected_adj_vid)
+						|| (triplet.get_row_idx() == expected_adj_vid && triplet.get_col_idx() == vid);
+					if (!pair_match)
+					{
+						LUISA_ERROR("Error in assembly: triplet_idx {} points to ({}, {}), but expected pair ({}, {})",
+							triplet_idx,
+							triplet.get_row_idx(),
+							triplet.get_col_idx(),
+							vid,
+							expected_adj_vid);
+					}
 					add_triplet_matrix(triplet, offdiag_hess);
+					offdiag_slot += 1;
 				}
 			}
 		};
@@ -1975,7 +2116,7 @@ namespace lcs
 	{
 		// stream << collision_data->toi_per_vert.view(0, 1).copy_to(host_collision_data->toi_per_vert.data())
 		//        << luisa::compute::synchronize();
-		// LUISA_INFO("  Min TOI after ground collision check: {:7.6f}", host_collision_data->toi_per_vert.front());
+		// LUISA_INFO("  Min TOI after ground collision check: {:.3e}", host_collision_data->toi_per_vert.front());
 
 		if (get_scene_params().use_self_collision)
 		{
@@ -1983,26 +2124,26 @@ namespace lcs
 				sim_data->sa_x_iter_start,
 				sim_data->sa_x,
 				mesh_data->sa_faces,
-				sim_data->sa_vert_affine_bodies_id,
+				sim_data->sa_x_property,
 				sim_data->sa_contact_active_verts_d_hat,
 				sim_data->sa_contact_active_verts_offset);
 
 			// stream << collision_data->toi_per_vert.view(0, 1).copy_to(host_collision_data->toi_per_vert.data())
 			//        << luisa::compute::synchronize();
-			// LUISA_INFO("  Min TOI after VF CCD check: {:7.6f}", host_collision_data->toi_per_vert.front());
+			// LUISA_INFO("  Min TOI after VF CCD check: {:.3e}", host_collision_data->toi_per_vert.front());
 
 			narrow_phase_detector->ee_ccd_query(stream,
 				sim_data->sa_x_iter_start,
 				sim_data->sa_x,
 				mesh_data->sa_edges,
-				sim_data->sa_vert_affine_bodies_id,
+				sim_data->sa_x_property,
 				sim_data->sa_contact_active_verts_d_hat,
 				sim_data->sa_contact_active_verts_offset);
 		}
 
 		// stream << collision_data->toi_per_vert.view(0, 1).copy_to(host_collision_data->toi_per_vert.data())
 		//        << luisa::compute::synchronize();
-		// LUISA_INFO("  Min TOI after EE CCD check: {:7.6f}", host_collision_data->toi_per_vert.front());
+		// LUISA_INFO("  Min TOI after EE CCD check: {:.3e}", host_collision_data->toi_per_vert.front());
 	}
 	void NewtonSolver::device_narrowphase_dcd(luisa::compute::Stream& stream)
 	{
@@ -2014,7 +2155,7 @@ namespace lcs
 			mesh_data->sa_rest_vert_area,
 			mesh_data->sa_rest_face_area,
 			mesh_data->sa_faces,
-			sim_data->sa_vert_affine_bodies_id,
+			sim_data->sa_x_property,
 			sim_data->sa_contact_active_verts_d_hat,
 			sim_data->sa_contact_active_verts_offset,
 			kappa);
@@ -2024,7 +2165,7 @@ namespace lcs
 			mesh_data->sa_rest_x,
 			mesh_data->sa_rest_edge_area,
 			mesh_data->sa_edges,
-			sim_data->sa_vert_affine_bodies_id,
+			sim_data->sa_x_property,
 			sim_data->sa_contact_active_verts_d_hat,
 			sim_data->sa_contact_active_verts_offset,
 			kappa);
@@ -2148,7 +2289,7 @@ namespace lcs
 		// stream << fn_pcg_spmv_offdiag_warp_rbk(input_ptr, output_ptr)
 		//               .dispatch(sim_data->sa_cgA_fixtopo_offdiag_triplet.size());
 
-		stream << fn_pcg_spmv_offdiag_block_rbk(sim_data->sa_cgA_fixtopo_offdiag_triplet, input_ptr, output_ptr)
+		stream << fn_pcg_spmv_offdiag_block_rbk(sim_data->sa_cgA_fixtopo_offdiag_triplet, input_ptr, output_ptr, false)
 					  .dispatch(sim_data->sa_cgA_fixtopo_offdiag_triplet.size());
 
 		// const uint num_pairs             = host_count.front();
@@ -2161,7 +2302,7 @@ namespace lcs
 		if (reduced_triplet != 0)
 		{
 			const uint aligned_diaptch_count = get_dispatch_threads(reduced_triplet, 256);
-			stream << fn_pcg_spmv_offdiag_block_rbk(collision_data->triplet_data.sa_cgA_contact_offdiag_triplet, input_ptr, output_ptr)
+			stream << fn_pcg_spmv_offdiag_block_rbk(collision_data->triplet_data.sa_cgA_contact_offdiag_triplet, input_ptr, output_ptr, false)
 						  .dispatch(aligned_diaptch_count);
 		}
 
@@ -2212,7 +2353,7 @@ namespace lcs
 
 			// Material Energy
 			auto fn_SpMV_reduce_by_key =
-				[&](const std::vector<MatrixTriplet3x3>& sa_cgA_offdiag_triplet, const uint gridDim, const uint triplet_count)
+				[&](const std::vector<MatrixTriplet3x3>& sa_cgA_offdiag_triplet, const uint gridDim, const uint triplet_count, const bool use_symmetry = true)
 			{
 				CpuParallel::parallel_for_each_core(
 					0,
@@ -2257,19 +2398,28 @@ namespace lcs
 								// if (get_scene_params().current_pcg_it == 0)
 								//     LUISA_INFO("Triplet {} try to add to {}, with {}", triplet_idx, vid, sum_contrib);
 
-								if (MatrixTriplet::write_use_atomic(matrix_property))
+								if (use_symmetry)
 								{
 									cgMutex[vid].lock();
 									output_ptr[vid] += sum_contrib;
 									cgMutex[vid].unlock();
-									// CpuParallel::spin_atomic<float3>::fetch_add(output_ptr[vid], sum_contrib);
-									// auto atomic_view = (CpuParallel::spin_atomic<float3>*)(&output_ptr[vid]);
-									// output_ptr[vid] += sum_contrib;
+									cgMutex[adj_vid].lock();
+									output_ptr[adj_vid] += contrib;
+									cgMutex[adj_vid].unlock();
 								}
 								else
 								{
-									output_ptr[vid] += sum_contrib;
-								};
+									if (MatrixTriplet::write_use_atomic(matrix_property))
+									{
+										cgMutex[vid].lock();
+										output_ptr[vid] += sum_contrib;
+										cgMutex[vid].unlock();
+									}
+									else
+									{
+										output_ptr[vid] += sum_contrib;
+									};
+								}
 								sum_contrib = luisa::make_float3(0.0f);
 							};
 						}
@@ -2280,14 +2430,14 @@ namespace lcs
 			// LUISA_INFO("Host SpMV off-diag part with {} triplets", num_triplet_material);
 			fn_SpMV_reduce_by_key(host_sim_data->sa_cgA_fixtopo_offdiag_triplet,
 				get_dispatch_block(num_triplet_material, 256),
-				num_triplet_material);
+				num_triplet_material, false);
 
 			const auto& host_count = host_collision_data->narrow_phase_collision_count;
 			const uint	num_triplet_contact = host_count[CollisionPair::CollisionCount::total_adj_verts_offset()];
 			// LUISA_INFO("Host SpMV off-diag contact part with {} triplets", num_triplet_contact);
 			fn_SpMV_reduce_by_key(host_collision_data->triplet_data.sa_cgA_contact_offdiag_triplet,
 				get_dispatch_block(num_triplet_contact, 256),
-				num_triplet_contact);
+				num_triplet_contact, false);
 		}
 	}
 	void NewtonSolver::host_solve_eigen(luisa::compute::Stream& stream)
@@ -2350,7 +2500,7 @@ namespace lcs
 		{
 			LUISA_ERROR("cgX exist NAN/INF value : {}", infinity_norm);
 		}
-		LUISA_INFO("  In newton iter {:2}, EigenSolve error = {:7.6f}, max_element(p) = {:6.5f}",
+		LUISA_INFO("  In newton iter {:2}, EigenSolve error = {:.3e}, max_element(p) = {:6.5f}",
 			get_scene_params().current_nonlinear_iter,
 			(cgB - cgA * cgX).norm(),
 			infinity_norm);
@@ -2415,16 +2565,16 @@ namespace lcs
 	{
 		stream << fn_apply_q_to_x_template(input_q, output_x).dispatch(output_x.size());
 	}
-	float3 fn_apply_template(const std::vector<uint>& sa_x_to_dof_map,
-		const std::vector<float3>&					  sa_scaled_model_x,
-		const std::vector<float3>&					  input_q,
-		const uint									  vid)
+	float3 fn_apply_template(const std::vector<VertexToDofMap>& sa_x_to_dof_map,
+		const std::vector<float3>&								sa_scaled_model_x,
+		const std::vector<float3>&								input_q,
+		const uint												vid)
 	{
 
 		float3	   new_dx;
-		const uint map_info = sa_x_to_dof_map[vid];
-		const uint dof_idx = map_info & (~Attributions::RIGID_BODY_FLAG);
-		if ((map_info & Attributions::RIGID_BODY_FLAG) == 0) // Soft body
+		const auto map_info = sa_x_to_dof_map[vid];
+		const uint dof_idx = map_info.get_dof_idx();
+		if (map_info.is_soft_body()) // Soft body
 		{
 			new_dx = input_q[dof_idx];
 		}
@@ -2474,9 +2624,20 @@ namespace lcs
 		{
 			device_ccd_line_search(device, stream);
 
-			stream << collision_data->toi_per_vert.view().copy_to(host_collision_data->toi_per_vert.data())
-				   << luisa::compute::synchronize();
+			stream
+				<< sim_data->sa_x_property.copy_to(host_sim_data->sa_x_property.data())
+				<< collision_data->toi_per_vert.view().copy_to(host_collision_data->toi_per_vert.data())
+				<< luisa::compute::synchronize();
 
+			std::vector<uint> invalid_verts;
+			for (uint vid = 0; vid < host_sim_data->sa_x_property.size(); ++vid)
+				if (host_sim_data->sa_x_property[vid].is_init_penetrated())
+					invalid_verts.push_back(vid);
+			uint invalid_vert_count = invalid_verts.size();
+			if (invalid_vert_count != 0)
+			{
+				LUISA_WARNING("Vertices with penetration in init state (Due to animation) (Count = {}) : {}", invalid_vert_count, invalid_verts);
+			}
 			float toi = host_collision_data->toi_per_vert.front();
 			return toi == 1.0f ? 1.0f : 0.9f * toi; // 0.9f * toi
 		};
@@ -2557,15 +2718,16 @@ namespace lcs
 			{
 				LUISA_ERROR("Invalid Toi {}", ccd_toi);
 			}
-			LUISA_INFO(
-				"  In newton iter {:2}: CCD toi = {:6.5f}, BroadPhase VF/EE = {} / {}, NarrowPhase = {} (Friction = {}), HessTriplet = {}",
-				iter,
-				ccd_toi,
-				host_collision_data->broad_phase_collision_count[CollisionPair::CollisionCount::vf_offset()],
-				host_collision_data->broad_phase_collision_count[CollisionPair::CollisionCount::ee_offset()],
-				host_collision_data->narrow_phase_collision_count.front(),
-				host_collision_data->num_pairs_in_first_iter.front(),
-				host_collision_data->narrow_phase_collision_count[CollisionPair::CollisionCount::total_adj_verts_offset()]);
+			if (get_scene_params().print_collision_info)
+				LUISA_INFO(
+					"  In newton iter {:2}: CCD toi = {:6.5f}, BroadPhase VF/EE = {} / {}, NarrowPhase = {} (Friction = {}), HessTriplet = {}",
+					iter,
+					ccd_toi,
+					host_collision_data->broad_phase_collision_count[CollisionPair::CollisionCount::vf_offset()],
+					host_collision_data->broad_phase_collision_count[CollisionPair::CollisionCount::ee_offset()],
+					host_collision_data->narrow_phase_collision_count.front(),
+					host_collision_data->num_pairs_in_first_iter.front(),
+					host_collision_data->narrow_phase_collision_count[CollisionPair::CollisionCount::total_adj_verts_offset()]);
 		}
 
 		// Non-linear iteration break condition
@@ -2574,10 +2736,11 @@ namespace lcs
 			float curr_max_step = fast_infinity_norm(host_sim_data->sa_dq);
 			if (curr_max_step < max_move * get_scene_params().implicit_dt)
 			{
-				LUISA_INFO("  In newton iter {:2}: Iteration break for small searching direction {} < {}",
-					iter,
-					curr_max_step,
-					max_move * get_scene_params().implicit_dt);
+				if (get_scene_params().print_pcg_info)
+					LUISA_INFO("  In newton iter {:2}: Iteration break for small searching direction {} < {}",
+						iter,
+						curr_max_step,
+						max_move * get_scene_params().implicit_dt);
 
 				apply_final_dx(alpha);
 				dirichlet_converged = true;
@@ -2655,7 +2818,7 @@ namespace lcs
 					{
 						// Converged condition: ||x - x_tilde|| < tol, or ||x - x_iter_start|| < tol
 						float3 delta1 = host_sim_data->sa_q[vid] - host_sim_data->sa_q_tilde[vid];
-						float3 delta2 = host_sim_data->sa_q[vid] - host_sim_data->sa_q_iter_start[vid];
+						float3 delta2 = host_sim_data->sa_dq[vid];
 						// LUISA_INFO("     Dirichlet vertex {} : current pos {}, target pos {}, start pos {}, delta1 {}, delta2 {}",
 						//            vid,
 						//            host_sim_data->sa_q[vid],
@@ -2798,6 +2961,7 @@ namespace lcs
 					buffer_upload(stream, host_sim_data->sa_x_iter_start, sim_data->sa_x_iter_start);
 					buffer_upload(stream, host_sim_data->sa_q_iter_start, sim_data->sa_q_iter_start);
 					buffer_upload(stream, host_sim_data->sa_x, sim_data->sa_x);
+					// buffer_upload(stream, host_sim_data->sa_q, sim_data->sa_q);
 				}
 
 				host_reset_cgB_cgX_diagA();
@@ -2863,7 +3027,7 @@ namespace lcs
 				narrow_phase_detector->resize_buffers(device, stream); // Pre-allocatation
 
 				if (iter == 99)
-					LUISA_ERROR("Solver is not converged in 100 iters");
+					LUISA_WARNING("Solver is not converged in 100 iters");
 			}
 			host_update_velocity();
 			host_apply_q_to_x(host_sim_data->sa_q_v, host_sim_data->sa_v);
@@ -2933,8 +3097,10 @@ namespace lcs
 							  host_sim_data->sa_cgA_fixtopo_offdiag_triplet.data());
 				narrow_phase_detector->download_contact_triplet(stream);
 				host_solve_eigen(stream);
-				CpuParallel::parallel_copy(host_sim_data->sa_cgX, host_sim_data->sa_dq);
-				stream << sim_data->sa_dq.copy_from(host_sim_data->sa_dq.data());
+				buffer_copy(host_sim_data->sa_cgX, host_sim_data->sa_dq);
+				host_apply_q_to_x(host_sim_data->sa_dq, host_sim_data->sa_dx);
+				buffer_upload(stream, host_sim_data->sa_dx, sim_data->sa_dx);
+				buffer_upload(stream, host_sim_data->sa_dq, sim_data->sa_dq);
 			}
 			else
 			{
@@ -2990,7 +3156,6 @@ namespace lcs
 				}
 				get_scene_params().current_nonlinear_iter = iter;
 
-				// TODO: If we use predict position, the start position may not in safe region
 				buffer_copy(stream, sim_data->sa_x, sim_data->sa_x_iter_start);
 				buffer_copy(stream, sim_data->sa_q, sim_data->sa_q_iter_start);
 				buffer_download(stream, sim_data->sa_x_iter_start, host_sim_data->sa_x_iter_start); // For host apply dx
@@ -3028,7 +3193,8 @@ namespace lcs
 					{
 						get_spring_energy()->device_evaluate(
 							stream, stretch_springs, sim_data->sa_x, stretch_springs.get_num_indices());
-						stream << fn_material_energy_assembly_stretch_spring(stretch_springs).dispatch(num_dof_soft);
+						stream << fn_material_energy_assembly_stretch_spring(stretch_springs)
+									  .dispatch(stretch_springs.constraint_offsets_in_adjlist.size());
 					}
 
 					const auto& stretch_faces = sim_data->get_stretch_face_data();
@@ -3036,7 +3202,8 @@ namespace lcs
 					{
 						get_stretch_face_energy()->device_evaluate(
 							stream, stretch_faces, sim_data->sa_x, stretch_faces.get_num_indices());
-						stream << fn_material_energy_assembly_stretch_face(stretch_faces).dispatch(num_dof_soft);
+						stream << fn_material_energy_assembly_stretch_face(stretch_faces)
+									  .dispatch(stretch_faces.constraint_offsets_in_adjlist.size());
 					}
 
 					const auto& bending_data = sim_data->get_bending_edge_data();
@@ -3047,7 +3214,8 @@ namespace lcs
 							sim_data->sa_x,
 							get_scene_params().get_bending_stiffness_scaling(),
 							bending_data.get_num_indices());
-						stream << fn_material_energy_assembly_bending(bending_data).dispatch(num_dof_soft);
+						stream << fn_material_energy_assembly_bending(bending_data)
+									  .dispatch(bending_data.constraint_offsets_in_adjlist.size());
 					}
 
 					const auto& abd_inertia_data = sim_data->get_abd_inertia_data();
@@ -3065,7 +3233,8 @@ namespace lcs
 							get_scene_params().contact_energy_type,
 							host_sim_data->num_verts_rigid);
 
-						stream << fn_material_energy_assembly_abd_inertia(abd_inertia_data, num_dof_soft).dispatch(num_dof_rigid);
+						stream << fn_material_energy_assembly_abd_inertia(abd_inertia_data, num_dof_soft)
+									  .dispatch(abd_inertia_data.constraint_offsets_in_adjlist.size());
 					}
 
 					const auto& abd_orthogonality_data = sim_data->get_abd_orthogonality_data();
@@ -3073,14 +3242,13 @@ namespace lcs
 					{
 						get_abd_ortho_energy()->device_evaluate(
 							stream, abd_orthogonality_data, sim_data->sa_q, abd_orthogonality_data.get_num_indices());
-						stream << fn_material_energy_assembly_abd_ortho(abd_orthogonality_data, num_dof_soft).dispatch(num_dof_rigid);
+						stream << fn_material_energy_assembly_abd_ortho(abd_orthogonality_data, num_dof_soft)
+									  .dispatch(abd_orthogonality_data.constraint_offsets_in_adjlist.size());
 					}
 
 					update_contact_set();
 
 					evaluate_contact();
-
-					// stream << fn_evaluate_dirichlet(substep_dt, get_scene_params().stiffness_dirichlet).dispatch(num_verts);
 				}
 
 				stream << luisa::compute::synchronize();
@@ -3092,7 +3260,7 @@ namespace lcs
 				narrow_phase_detector->resize_buffers(device, stream); // Pre-allocatation
 
 				if (iter == 99)
-					LUISA_ERROR("Solver is not converged in 100 iters");
+					LUISA_WARNING("Solver is not converged in 100 iters");
 			}
 
 			stream << fn_update_velocity(substep_dt, get_scene_params().fix_scene, get_scene_params().damping_rate)

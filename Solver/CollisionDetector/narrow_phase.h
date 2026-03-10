@@ -33,9 +33,9 @@ namespace lcs
 
 	private:
 		void compile_ccd(AsyncCompiler& compiler);
-		void compile_dcd(AsyncCompiler& compiler, const ContactEnergyType contact_energy_type);
-		void compile_friction(AsyncCompiler& compiler, const ContactEnergyType contact_energy_type);
-		void compile_energy(AsyncCompiler& compiler, const ContactEnergyType contact_energy_type);
+		void compile_dcd(AsyncCompiler& compiler);
+		void compile_friction(AsyncCompiler& compiler);
+		void compile_energy(AsyncCompiler& compiler);
 		void compile_construct_pervert_adj_collision_list(AsyncCompiler& compiler);
 		void compile_make_contact_triplet(AsyncCompiler& compiler);
 		void compile_assemble_atomic(AsyncCompiler& compiler);
@@ -94,21 +94,21 @@ namespace lcs
 
 	public:
 		// CCD
-		void vf_ccd_query(Stream& stream,
-			const Buffer<float3>& sa_x_begin,
-			const Buffer<float3>& sa_x_end,
-			const Buffer<uint3>&  sa_faces,
-			const Buffer<uint>&	  sa_vert_affine_bodies_id,
-			const Buffer<float>&  d_hat,
-			const Buffer<float>&  thickness);
+		void vf_ccd_query(Stream&		  stream,
+			const Buffer<float3>&		  sa_x_begin,
+			const Buffer<float3>&		  sa_x_end,
+			const Buffer<uint3>&		  sa_faces,
+			const Buffer<VertexProperty>& sa_x_property,
+			const Buffer<float>&		  d_hat,
+			const Buffer<float>&		  thickness);
 
-		void ee_ccd_query(Stream& stream,
-			const Buffer<float3>& sa_x_begin,
-			const Buffer<float3>& sa_x_end,
-			const Buffer<uint2>&  sa_edges,
-			const Buffer<uint>&	  sa_vert_affine_bodies_id,
-			const Buffer<float>&  d_hat,
-			const Buffer<float>&  thickness);
+		void ee_ccd_query(Stream&		  stream,
+			const Buffer<float3>&		  sa_x_begin,
+			const Buffer<float3>&		  sa_x_end,
+			const Buffer<uint2>&		  sa_edges,
+			const Buffer<VertexProperty>& sa_x_property,
+			const Buffer<float>&		  d_hat,
+			const Buffer<float>&		  thickness);
 
 		void host_vf_ccd_query(Stream& stream,
 			const std::vector<float3>& sa_x_begin_left,
@@ -137,7 +137,7 @@ namespace lcs
 			const Buffer<float>&			sa_rest_vert_area,
 			const Buffer<float>&			sa_rest_face_area,
 			const Buffer<uint3>&			sa_faces,
-			const Buffer<uint>&				sa_vert_affine_bodies_id,
+			const Buffer<VertexProperty>&	sa_x_property,
 			const Buffer<float>&			d_hat,
 			const Buffer<float>&			thickness,
 			const float						kappa);
@@ -147,7 +147,7 @@ namespace lcs
 			const Buffer<float3>&			sa_rest_x,
 			const Buffer<float>&			sa_rest_edge_area,
 			const Buffer<uint2>&			sa_edges,
-			const Buffer<uint>&				sa_vert_affine_bodies_id,
+			const Buffer<VertexProperty>&	sa_x_property,
 			const Buffer<float>&			d_hat,
 			const Buffer<float>&			thickness,
 			const float						kappa);
@@ -195,12 +195,14 @@ namespace lcs
 		using CDBG = lcs::CollisionData<luisa::compute::Buffer>;	  // CollisionData Binding Group
 		using TDBG = lcs::ContactTripletData<luisa::compute::Buffer>; // ContactTripletData Binding Group
 
+		luisa::compute::Shader<1, luisa::compute::Buffer<VertexProperty>> fn_reset_vertex_property;
+
 		luisa::compute::Shader<1,
 			CDBG,
 			luisa::compute::Buffer<float3>,
 			luisa::compute::Buffer<float3>,
 			luisa::compute::Buffer<uint3>,
-			luisa::compute::Buffer<uint>,
+			luisa::compute::Buffer<VertexProperty>,
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<float>,
 			uint>
@@ -211,7 +213,7 @@ namespace lcs
 			luisa::compute::Buffer<float3>,
 			luisa::compute::Buffer<float3>,
 			luisa::compute::Buffer<uint2>,
-			luisa::compute::Buffer<uint>,
+			luisa::compute::Buffer<VertexProperty>,
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<float>,
 			uint>
@@ -229,10 +231,11 @@ namespace lcs
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<uint3>,
-			luisa::compute::Buffer<uint>,
+			luisa::compute::Buffer<VertexProperty>,
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<float>,
 			float,
+			uint,
 			uint,
 			uint>
 			fn_narrow_phase_vf_dcd_query;
@@ -243,17 +246,36 @@ namespace lcs
 			luisa::compute::Buffer<float3>,
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<uint2>,
-			luisa::compute::Buffer<uint>,
+			luisa::compute::Buffer<VertexProperty>,
 			luisa::compute::Buffer<float>,
 			luisa::compute::Buffer<float>,
 			float,
 			uint,
+			uint,
 			uint>
 			fn_narrow_phase_ee_dcd_query;
 
-		luisa::compute::Shader<1, CDBG, luisa::compute::BufferView<float3>, luisa::compute::BufferView<float3>, luisa::compute::BufferView<float>, luisa::compute::BufferView<float>, luisa::compute::BufferView<float>, float>
-																																		 fn_compute_repulsion_energy;
-		luisa::compute::Shader<1, CDBG, Buffer<float3>, Buffer<float3>, Buffer<float>, Buffer<float>, Buffer<float>, float, float, bool> fn_process_collision_pair_friction;
+		luisa::compute::Shader<1,
+			CDBG,
+			luisa::compute::BufferView<float3>,
+			luisa::compute::BufferView<float3>,
+			luisa::compute::BufferView<float>,
+			luisa::compute::BufferView<float>,
+			luisa::compute::BufferView<float>,
+			float, uint>
+			fn_compute_repulsion_energy;
+
+		luisa::compute::Shader<1,
+			CDBG,
+			Buffer<float3>,
+			Buffer<float3>,
+			Buffer<float>,
+			Buffer<float>,
+			Buffer<float>,
+			float,
+			float,
+			bool>
+			fn_process_collision_pair_friction;
 
 		// Scan
 		luisa::compute::Shader<1, CDBG>											 fn_preprocess_for_affine_bodies;

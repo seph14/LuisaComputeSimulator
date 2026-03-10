@@ -108,7 +108,8 @@ namespace lcs
 		~SolverInterface() {}
 
 	private:
-		void init_animation(const std::vector<lcs::Initializer::WorldData>& world_data);
+		void init_world_data();
+		void init_animation();
 
 	protected:
 		void init_data(luisa::compute::Device& device, luisa::compute::Stream& stream);
@@ -129,20 +130,14 @@ namespace lcs
 		void get_curr_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
 		void get_rest_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
 		void get_triangles_to_host(std::vector<std::vector<std::array<uint, 3>>>& output_triangles);
-		uint query_object_index_by_registration_id(uint registration_id) const;
-		uint query_object_index_by_unique_name(const std::string& unique_name) const;
+		uint query_sorted_index_by_registration_id(uint registration_id) const;
+		uint query_registration_id_by_sorted_index(uint sorted_idx) const;
 		void get_object_sim_result_by_registration_id(uint registration_id,
 			std::vector<std::array<float, 3>>&			   output_positions,
 			std::vector<std::array<uint, 3>>&			   output_triangles);
-		void get_object_sim_result_by_unique_name(const std::string& unique_name,
-			std::vector<std::array<float, 3>>&						 output_positions,
-			std::vector<std::array<uint, 3>>&						 output_triangles);
-		void update_pinned_verts_position(const uint meshIdx,
-			const uint								 local_vid,
-			const std::array<float, 3>&				 pinned_verts_target_position);
-		void update_pinned_body_state(const uint body_id,
-			const std::array<float, 3>&			 translation = { 0.0f, 0.0f, 0.0f },
-			const std::array<float, 4>&			 rotation = { 0.0f, 0.0f, 0.0f, 0.0f });
+		void update_per_vertex_animation(const uint meshIdx, const uint local_vid, const std::array<float, 3>& target_position);
+		void update_per_body_animation(const uint body_id, const std::array<float, 3>& target_translation, const std::array<float, 3>& target_rotation);
+		void update_default_animations();
 
 	protected:
 		void physics_step_prev_operation();
@@ -156,6 +151,7 @@ namespace lcs
 
 		// TODO: Impl with vector
 		std::unordered_map<uint, uint>			   vid_to_animation_idx_map;
+		std::unordered_map<uint, uint>			   body_to_animation_idx_map;
 		std::vector<Animation::PerVertexAnimation> per_vertex_animations;
 		std::vector<Animation::PerBodyAnimation>   per_body_animations;
 
@@ -185,26 +181,36 @@ namespace lcs
 		SimulationData<std::vector>&		   get_host_sim_data() const { return *host_sim_data; }
 		CollisionData<std::vector>&			   get_host_collision_data() const { return *host_collision_data; }
 		CollisionData<luisa::compute::Buffer>& get_device_collision_data() const { return *collision_data; }
-		std::vector<Initializer::WorldData>&   get_world_data() { return world_data; }
 
-		Initializer::WorldData& register_world_data(const Initializer::WorldData& wd)
+		// Note that: world_data will be sorted after calling `init_solver()`
+		const std::vector<Initializer::WorldData>& get_sorted_world_data() const { return world_data; }
+		const Initializer::WorldData&			   get_object_by_registration_id(uint registration_id) const
 		{
-			auto& data = world_data.emplace_back(wd);
-			data.registration_index = static_cast<uint>(world_data.size() - 1);
-			return data;
+			const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+			return world_data[sorted_idx];
 		}
-		Initializer::WorldData& register_world_data_from_file_path(const std::string_view& name, const std::string_view& file_path)
+		Initializer::WorldData create_world_data()
 		{
-			auto& data = world_data.emplace_back().load_mesh_from_path(file_path).set_name(name);
-			data.registration_index = static_cast<uint>(world_data.size() - 1);
-			return data;
+			return Initializer::WorldData();
 		}
-		Initializer::WorldData& register_world_data_from_array(const std::string_view& name, const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces)
+		uint register_world_data(const Initializer::WorldData& wd)
 		{
-			auto& data = world_data.emplace_back().load_mesh_from_array(vertices, faces).set_name(name);
-			data.registration_index = static_cast<uint>(world_data.size() - 1);
-			return data;
+			uint new_registration_id = static_cast<uint>(world_data.size());
+			world_data.emplace_back(wd).registration_index = new_registration_id;
+			return new_registration_id;
 		}
+		// uint register_world_data_from_file_path(const std::string_view& name, const std::string_view& file_path)
+		// {
+		// 	auto& data = world_data.emplace_back().load_mesh_from_path(file_path).set_name(name);
+		// 	data.registration_index = static_cast<uint>(world_data.size() - 1);
+		// 	return data;
+		// }
+		// uint register_world_data_from_array(const std::string_view& name, const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces)
+		// {
+		// 	auto& data = world_data.emplace_back().load_mesh_from_array(vertices, faces).set_name(name);
+		// 	data.registration_index = static_cast<uint>(world_data.size() - 1);
+		// 	return data;
+		// }
 
 		// Device management: create and own a luisa device/stream.
 		// binary_path : argv[0], used by luisa::compute::Context. Empty = use current executable path.

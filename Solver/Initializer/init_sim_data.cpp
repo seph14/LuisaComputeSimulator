@@ -14,32 +14,38 @@
 
 namespace lcs::Initializer
 {
+	using namespace Material;
 
-	template <size_t N>
-	std::array<luisa::ushort, N*(N - 1)> get_offsets_in_adjlist_from_adjacent_list(
-		const std::vector<std::vector<uint>>& vert_adj_verts, const luisa::Vector<uint, N>& element)
+	template <size_t N, typename TypeOffset, size_t NumOffDiag = N * (N - 1)>
+	std::array<TypeOffset, N*(N - 1)> get_offsets_in_adjlist_from_adjacent_list(
+		const std::vector<std::vector<uint>>& vert_adj_verts,
+		const std::vector<uint>&			  vert_adj_verts_csr,
+		const luisa::Vector<uint, N>&		  element)
 	{
-		std::array<luisa::ushort, N*(N - 1)> offsets = { 0 };
-		uint								 idx = 0;
+		std::array<TypeOffset, N*(N - 1)> offsets = { 0 };
+		uint							  idx = 0;
 		for (uint ii = 0; ii < N; ii++)
 		{
-			const uint				 vid = element[ii];
-			const std::vector<uint>& adj_list = vert_adj_verts[vid];
+			const uint vid = element[ii];
 			for (uint jj = 0; jj < N; jj++)
 			{
 				if (ii != jj)
 				{
 					const uint adj_vid = element[jj];
-					const uint offset =
-						std::distance(adj_list.begin(), std::find(adj_list.begin(), adj_list.end(), adj_vid));
-					if (offset >= adj_list.size())
+					// const uint				 row = min_scalar(vid, adj_vid);
+					// const uint				 col = max_scalar(vid, adj_vid);
+					const std::vector<uint>& adj_list = vert_adj_verts[vid];
+					auto					 it = std::find(adj_list.begin(), adj_list.end(), adj_vid);
+					if (it == adj_list.end())
 					{
-						LUISA_ERROR("Offset in adjlist not found! vid = {}, adj_vid = {}, adj_list_size = {}",
+						LUISA_ERROR("Offset in adjlist not found! pair = ({}, {}), adj_list of {} = {}",
 							vid,
 							adj_vid,
-							adj_list.size());
+							vid,
+							adj_list);
 					}
-					offsets[idx] = luisa::ushort(offset);
+					const uint local_offset = static_cast<uint>(std::distance(adj_list.begin(), it));
+					offsets[idx] = TypeOffset(vert_adj_verts_csr[vid] + local_offset);
 					idx += 1;
 				}
 			}
@@ -188,11 +194,14 @@ namespace lcs::Initializer
 	{
 		if (vid1 == vid2)
 			std::cerr << "Try to build connection with self vertex";
-		auto& inner_list = adj_map[vid1];
-		auto  find_result = std::find(inner_list.begin(), inner_list.end(), vid2);
-		if (find_result == inner_list.end())
+		// if (vid1 < vid2) // Only store upper-triangular part of the adjacency to avoid duplication, since the adjacency is symmetric
 		{
-			inner_list.push_back(vid2);
+			auto& inner_list = adj_map[vid1];
+			auto  find_result = std::find(inner_list.begin(), inner_list.end(), vid2);
+			if (find_result == inner_list.end())
+			{
+				inner_list.push_back(vid2);
+			}
 		}
 	};
 
@@ -259,6 +268,7 @@ namespace lcs::Initializer
 
 	template <typename Derived>
 	static void init_constitution_offsets_in_adjlist(const std::vector<std::vector<uint>>& adj_map,
+		const std::vector<uint>&														   adj_map_csr,
 		Constitutions::ConstitutionInterface<std::vector, Derived>&						   constitution_template)
 	{
 		constexpr size_t N = Derived::get_num_verts_per_constaint();
@@ -275,10 +285,59 @@ namespace lcs::Initializer
 				[&](const uint eid)
 				{
 					auto element = sa_constitution_elements[eid];
-					auto mask = get_offsets_in_adjlist_from_adjacent_list<N>(adj_map, element); // size = N*(N-1)
+					auto mask =
+						get_offsets_in_adjlist_from_adjacent_list<N, uint>(adj_map, adj_map_csr, element); // size = N*(N-1)
+
+					if constexpr (true)
+					{
+						// Validate that each stored slot maps to the expected absolute triplet index.
+						uint slot_idx = 0;
+						for (uint ii = 0; ii < N; ii++)
+						{
+							for (uint jj = 0; jj < N; jj++)
+							{
+								if (ii == jj)
+								{
+									continue;
+								}
+
+								const uint vid = element[ii];
+								const uint adj_vid = element[jj];
+								// const uint row = min_scalar(vid, adj_vid);
+								// const uint col = max_scalar(vid, adj_vid);
+
+								const auto& row_adj = adj_map[vid];
+								auto		row_it = std::find(row_adj.begin(), row_adj.end(), adj_vid);
+								if (row_it == row_adj.end())
+								{
+									LUISA_ERROR("Error in init offset map: row {} cannot find adjacent col {} (eid = {}, ii = {}, jj = {})",
+										vid,
+										adj_vid,
+										eid,
+										ii,
+										jj);
+								}
+								const uint expected_idx =
+									adj_map_csr[vid] + static_cast<uint>(std::distance(row_adj.begin(), row_it));
+								const uint actual_idx = mask[slot_idx];
+								if (actual_idx != expected_idx)
+								{
+									LUISA_ERROR("Error in init offset map: mismatch at eid = {}, slot = {}, pair ({}, {}) expected triplet_idx {}, got {}",
+										eid,
+										slot_idx,
+										vid,
+										adj_vid,
+										expected_idx,
+										actual_idx);
+								}
+								slot_idx += 1;
+							}
+						}
+					}
+
 					std::memcpy(sa_constitution_offsets_in_adjlist.data() + eid * num_offdiag,
 						mask.data(),
-						sizeof(ushort) * num_offdiag);
+						sizeof(uint) * num_offdiag);
 				});
 		}
 		else
@@ -287,9 +346,9 @@ namespace lcs::Initializer
 		}
 	}
 
-	void init_sim_data(std::vector<lcs::Initializer::WorldData>& world_data,
-		lcs::MeshData<std::vector>*								 mesh_data,
-		lcs::SimulationData<std::vector>*						 sim_data)
+	void init_sim_data(const std::vector<lcs::Initializer::WorldData>& world_data,
+		lcs::MeshData<std::vector>*									   mesh_data,
+		lcs::SimulationData<std::vector>*							   sim_data)
 	{
 		// Calculate number of energy element
 		constexpr bool cull_unused_constraints = true;
@@ -347,7 +406,7 @@ namespace lcs::Initializer
 				const auto& mesh_info = world_data[mesh_idx];
 				bool		use_bending = mesh_info.holds<ClothMaterial>()
 					&& mesh_info.get_material<ClothMaterial>().bending_model
-						!= ConstitutiveBendingModelCloth::None;
+						!= ConstitutiveBendingModelCloth::Empty;
 				uint4 edge = mesh_data->sa_dihedral_edges[eid];
 				bool  is_dynamic = cull_unused_constraints ? !mesh_data->sa_is_fixed[edge[0]] || !mesh_data->sa_is_fixed[edge[1]]
 						 || !mesh_data->sa_is_fixed[edge[2]] || !mesh_data->sa_is_fixed[edge[3]]
@@ -447,6 +506,7 @@ namespace lcs::Initializer
 			sim_data->sa_x_outer.resize(num_verts_total);
 			sim_data->sa_v_outer.resize(num_verts_total);
 			sim_data->sa_x_to_dof_map.resize(num_verts_total);
+			sim_data->sa_x_property.resize(num_verts_total);
 			sim_data->sa_vert_affine_bodies_id.resize(num_verts_total, -1u);
 		}
 
@@ -508,15 +568,34 @@ namespace lcs::Initializer
 				CpuParallel::parallel_copy(mesh_data->sa_rest_x, sim_data->sa_rest_x);
 				CpuParallel::parallel_copy(mesh_data->sa_rest_v, sim_data->sa_rest_v);
 				CpuParallel::parallel_copy(mesh_data->sa_scaled_model_x, sim_data->sa_scaled_model_x);
+				CpuParallel::parallel_set(sim_data->sa_x_property, VertexProperty());
+				CpuParallel::parallel_set(sim_data->sa_q_property, DofProperty());
+
+				// uint attribute_info = 0;
+				// bool is_fixed() const { return (attribute_info & 0x1) != 0; }
+				// bool is_rigid_body() const { return (attribute_info & 0x8) != 0; }
+				// bool is_self_collision_disabled() const { return (attribute_info & 0x200) != 0; }
+				// bool is_ccd_disabled() const { return (attribute_info & 0x400) != 0; }
+				// bool is_friction_disabled() const { return (attribute_info & 0x800) != 0; }
+				// bool is_gravity_disabled() const { return (attribute_info & 0x1000) != 0; }
+				// uint get_object_id() const { return (attribute_info >> 16) & 0x7FFF; }
 
 				// Soft body vertices map to dof
 				CpuParallel::parallel_for(0,
 					num_verts_soft,
 					[&](const uint vid)
 					{
-						sim_data->sa_x_to_dof_map[vid] = vid;
-						sim_data->sa_q_is_fixed[vid] = mesh_data->sa_is_fixed[vid];
-						sim_data->sa_q_property[vid] = 0;
+						const uint mesh_idx = mesh_data->sa_vert_mesh_id[vid];
+						sim_data->sa_x_property[vid].set_object_id(mesh_idx);
+						sim_data->sa_x_to_dof_map[vid].set_as_soft_body(vid);
+						sim_data->sa_q_property[vid].set_is_soft();
+						const bool is_fixed = mesh_data->sa_is_fixed[vid];
+						sim_data->sa_q_is_fixed[vid] = is_fixed;
+						if (is_fixed)
+						{
+							sim_data->sa_x_property[vid].set_is_fixed();
+							sim_data->sa_q_property[vid].set_is_fixed();
+						}
 					});
 
 				// Rigid body vertices map to dof
@@ -526,23 +605,38 @@ namespace lcs::Initializer
 					const uint meshIdx = affine_body_indices[body_idx];
 					const uint prefix_vid = mesh_data->prefix_num_verts[meshIdx];
 					const uint suffix_vid = mesh_data->prefix_num_verts[meshIdx + 1];
-					for (uint vid = prefix_vid; vid < suffix_vid; vid++)
-					{
-						sim_data->sa_x_to_dof_map[vid] = dof_idx | (Attributions::RIGID_BODY_FLAG);
-						sim_data->sa_vert_affine_bodies_id[vid] = body_idx;
-					}
+
 					bool has_fixed_vert = std::any_of(mesh_data->sa_is_fixed.begin() + prefix_vid,
 						mesh_data->sa_is_fixed.begin() + suffix_vid,
 						[](const uint is_fixed)
 						{ return is_fixed; });
+					for (uint vid = prefix_vid; vid < suffix_vid; vid++)
+					{
+						sim_data->sa_x_property[vid].set_is_rigid_body();
+						sim_data->sa_x_property[vid].set_object_id(meshIdx);
+						sim_data->sa_x_to_dof_map[vid].set_as_rigid_body(dof_idx);
+						sim_data->sa_vert_affine_bodies_id[vid] = body_idx;
+						if (has_fixed_vert)
+						{
+							sim_data->sa_x_property[vid].set_is_fixed();
+						}
+					}
 					sim_data->sa_q_is_fixed[dof_idx + 0] = has_fixed_vert;
 					sim_data->sa_q_is_fixed[dof_idx + 1] = has_fixed_vert;
 					sim_data->sa_q_is_fixed[dof_idx + 2] = has_fixed_vert;
 					sim_data->sa_q_is_fixed[dof_idx + 3] = has_fixed_vert;
-					sim_data->sa_q_property[dof_idx + 0] = Attributions::RIGID_BODY_FLAG | Attributions::ABD_Is_Translation_DOF;
-					sim_data->sa_q_property[dof_idx + 1] = Attributions::RIGID_BODY_FLAG;
-					sim_data->sa_q_property[dof_idx + 2] = Attributions::RIGID_BODY_FLAG;
-					sim_data->sa_q_property[dof_idx + 3] = Attributions::RIGID_BODY_FLAG;
+					sim_data->sa_q_property[dof_idx + 0].set_is_translation_dof();
+					sim_data->sa_q_property[dof_idx + 0].set_is_rigid();
+					sim_data->sa_q_property[dof_idx + 1].set_is_rigid();
+					sim_data->sa_q_property[dof_idx + 2].set_is_rigid();
+					sim_data->sa_q_property[dof_idx + 3].set_is_rigid();
+					if (has_fixed_vert)
+					{
+						sim_data->sa_q_property[dof_idx + 0].set_is_fixed();
+						sim_data->sa_q_property[dof_idx + 1].set_is_fixed();
+						sim_data->sa_q_property[dof_idx + 2].set_is_fixed();
+						sim_data->sa_q_property[dof_idx + 3].set_is_fixed();
+					}
 				}
 			}
 		}
@@ -730,6 +824,8 @@ namespace lcs::Initializer
 						luisa::make_float2(mu, lambda);
 				});
 
+			const float default_stiffness_dirichlet = 1e6f;
+
 			// Init soft inertia info
 			auto& soft_inertia_data = sim_data->get_soft_inertia_data();
 			soft_inertia_data.constraint_indices.resize(num_verts_soft);
@@ -743,7 +839,7 @@ namespace lcs::Initializer
 					const bool is_fixed = mesh_data->sa_is_fixed[orig_vid];
 					soft_inertia_data.constraint_indices[vid] = orig_vid;
 					soft_inertia_data.sa_soft_vert_mass[vid] = mesh_data->sa_vert_mass[orig_vid];
-					soft_inertia_data.sa_stiffness_dirichlet[vid] = is_fixed ? 1e9f : 1.0f;
+					soft_inertia_data.sa_stiffness_dirichlet[vid] = is_fixed ? default_stiffness_dirichlet : 1.0f;
 				});
 
 			// Rest affine body info
@@ -912,7 +1008,7 @@ namespace lcs::Initializer
 				}
 
 				const bool has_fixed_vert = sim_data->sa_q_is_fixed[prefix_dof_abd + 4 * body_idx];
-				abd_inertia_data.sa_stiffness_dirichlet[body_idx] = has_fixed_vert ? 1e9f : 1.0f;
+				abd_inertia_data.sa_stiffness_dirichlet[body_idx] = has_fixed_vert ? default_stiffness_dirichlet : 1.0f;
 
 				float area = std::reduce(mesh_data->sa_rest_vert_area.begin() + prefix_vid,
 					mesh_data->sa_rest_vert_area.begin() + suffix_vid,
@@ -954,17 +1050,6 @@ namespace lcs::Initializer
 			sim_data->vert_adj_material_force_verts.resize(num_dof);
 
 			auto& adj_map = sim_data->vert_adj_material_force_verts;
-			auto  insert_adj_vert = [&adj_map](const uint& vid1, const uint& vid2)
-			{
-				if (vid1 == vid2)
-					std::cerr << "Try to build connection with self vertex";
-				auto& inner_list = adj_map[vid1];
-				auto  find_result = std::find(inner_list.begin(), inner_list.end(), vid2);
-				if (find_result == inner_list.end())
-				{
-					inner_list.push_back(vid2);
-				}
-			};
 
 			// Vert adj soft-body fixed constraints
 			auto& soft_inertia_data = sim_data->get_soft_inertia_data();
@@ -1185,34 +1270,35 @@ namespace lcs::Initializer
 		// Find material-force-offset
 		{
 			const std::vector<std::vector<uint>>& adj_list = sim_data->vert_adj_material_force_verts;
+			const std::vector<uint>&			  csr = sim_data->sa_vert_adj_material_force_verts_csr;
 
 			// Spring energy
 			auto& stretch_spring_data = sim_data->get_stretch_spring_data();
-			init_constitution_offsets_in_adjlist(adj_list, stretch_spring_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, stretch_spring_data);
 
 			// Stretch face energy
 			auto& stretch_face_data = sim_data->get_stretch_face_data();
-			init_constitution_offsets_in_adjlist(adj_list, stretch_face_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, stretch_face_data);
 
 			// Bending angle energy
 			auto& bending_edge_data = sim_data->get_bending_edge_data();
-			init_constitution_offsets_in_adjlist(adj_list, bending_edge_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, bending_edge_data);
 
 			// Stress tetrahedron energy
 			auto& stress_tet_data = sim_data->get_stress_tet_data();
-			init_constitution_offsets_in_adjlist(adj_list, stress_tet_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, stress_tet_data);
 
 			// Affine body inertia & ground collision data
 			auto& abd_inertia_data = sim_data->get_abd_inertia_data();
-			init_constitution_offsets_in_adjlist(adj_list, abd_inertia_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, abd_inertia_data);
 
 			// Affine body orthogonality
 			auto& abd_ortho_data = sim_data->get_abd_orthogonality_data();
-			init_constitution_offsets_in_adjlist(adj_list, abd_ortho_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, abd_ortho_data);
 
 			// Soft body inertia & ground collision data
 			auto& soft_inertia_data = sim_data->get_soft_inertia_data();
-			init_constitution_offsets_in_adjlist(adj_list, soft_inertia_data);
+			init_constitution_offsets_in_adjlist(adj_list, csr, soft_inertia_data);
 		}
 	}
 
@@ -1249,7 +1335,8 @@ namespace lcs::Initializer
 			stream << upload_buffer(device, output_data->sa_rest_x, input_data->sa_rest_x)
 				   << upload_buffer(device, output_data->sa_rest_v, input_data->sa_rest_v)
 				   << upload_buffer(device, output_data->sa_scaled_model_x, input_data->sa_scaled_model_x)
-				   << upload_buffer(device, output_data->sa_x_to_dof_map, input_data->sa_x_to_dof_map);
+				   << upload_buffer(device, output_data->sa_x_to_dof_map, input_data->sa_x_to_dof_map)
+				   << upload_buffer(device, output_data->sa_x_property, input_data->sa_x_property);
 			resize_buffer(device, output_data->sa_x, num_verts_total);
 			resize_buffer(device, output_data->sa_v, num_verts_total);
 			resize_buffer(device, output_data->sa_x_step_start, num_verts_total);

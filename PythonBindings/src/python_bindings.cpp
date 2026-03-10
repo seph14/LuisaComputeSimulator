@@ -3,70 +3,38 @@
 #include <pybind11/stl.h>
 
 #include <cstdint>
+#include <array>
 #include <memory>
-#include <optional>
 #include <string>
+#include <string_view>
 
 #include <luisa/luisa-compute.h>
 
-#include "Initializer/init_mesh_data.h"
-#include "MeshOperation/mesh_reader.h"
+#include "SimulationCore/world_data.h"
 #include "SimulationSolver/newton_solver.h"
 #include "SimulationCore/scene_params.h"
+#include "app_simulation_demo_config.h"
 
 namespace py = pybind11;
 using namespace lcs;
 using namespace lcs::Initializer;
+using namespace lcs::Material;
 
 // Helper wrapper to hold WorldData pointer and expose chainable methods
 struct WorldDataWrapper
 {
-	WorldData* wd;
-	WorldDataWrapper(WorldData* w)
-		: wd(w)
+	std::shared_ptr<WorldData> wd;
+	WorldDataWrapper(std::shared_ptr<WorldData> w)
+		: wd(std::move(w))
 	{
 	}
 
-	// parse FixedPointsType from string (same names used in JSON/config)
-	static FixedPointsType parse_fixed_method_py(const std::string& s)
-	{
-		if (s == "None")
-			return FixedPointsType::None;
-		if (s == "FromIndices")
-			return FixedPointsType::FromIndices;
-		if (s == "FromFunction")
-			return FixedPointsType::FromFunction;
-		if (s == "Left")
-			return FixedPointsType::Left;
-		if (s == "Right")
-			return FixedPointsType::Right;
-		if (s == "Front")
-			return FixedPointsType::Front;
-		if (s == "Back")
-			return FixedPointsType::Back;
-		if (s == "Up")
-			return FixedPointsType::Up;
-		if (s == "Down")
-			return FixedPointsType::Down;
-		if (s == "LeftBack")
-			return FixedPointsType::LeftBack;
-		if (s == "LeftFront")
-			return FixedPointsType::LeftFront;
-		if (s == "RightBack")
-			return FixedPointsType::RightBack;
-		if (s == "RightFront")
-			return FixedPointsType::RightFront;
-		if (s == "All")
-			return FixedPointsType::All;
-		return FixedPointsType::All;
-	}
-
-	WorldDataWrapper& set_name(const std::string& name)
+	WorldDataWrapper& set_name(const std::string_view& name)
 	{
 		wd->set_name(name);
 		return *this;
 	}
-	WorldDataWrapper& set_simulation_type(lcs::Initializer::MaterialType t)
+	WorldDataWrapper& set_simulation_type(lcs::Material::MaterialType t)
 	{
 		wd->set_material_type(t);
 		return *this;
@@ -74,66 +42,90 @@ struct WorldDataWrapper
 
 	// Expose cloth material setter by accepting keyword args
 	WorldDataWrapper& set_physics_material_cloth(
-		float thickness = ClothMaterial::default_thickness(),
-		float youngs_modulus = ClothMaterial::default_youngs_modulus(),
-		float poisson_ratio = ClothMaterial::default_poisson_ratio(),
-		float area_bending_stiffness = ClothMaterial::default_area_bending_stiffness())
+		const std::string_view& stretch_model = cloth_stretch_model_to_string(ClothMaterial::default_stretch_model()),
+		const std::string_view& bending_model = cloth_bending_model_to_string(ClothMaterial::default_bending_model()),
+		float					thickness = ClothMaterial::default_thickness(),
+		float					youngs_modulus = ClothMaterial::default_youngs_modulus(),
+		float					poisson_ratio = ClothMaterial::default_poisson_ratio(),
+		float					area_bending_stiffness = ClothMaterial::default_area_bending_stiffness(),
+		float					d_hat = ClothMaterial::default_d_hat(),
+		float					contact_offset = ClothMaterial::default_contact_offset())
 	{
-		wd->set_material_type(lcs::Initializer::MaterialType::Cloth);
+		wd->set_material_type(lcs::Material::MaterialType::Cloth);
 		ClothMaterial mat;
+		mat.stretch_model = parse_cloth_stretch_model(stretch_model);
+		mat.bending_model = parse_cloth_bending_model(bending_model);
 		mat.thickness = thickness;
 		mat.youngs_modulus = youngs_modulus;
 		mat.poisson_ratio = poisson_ratio;
 		mat.area_bending_stiffness = area_bending_stiffness;
+		mat.d_hat = d_hat;
+		mat.contact_offset = contact_offset;
 		wd->set_physics_material(mat);
 		return *this;
 	}
 
 	// Expose tetrahedral material setter
 	WorldDataWrapper& set_physics_material_tet(
-		float youngs_modulus = TetMaterial::default_youngs_modulus(),
-		float poisson_ratio = TetMaterial::default_poisson_ratio(),
-		float density = TetMaterial::default_density(),
-		float mass = TetMaterial::default_mass())
+		const std::string_view& model = tet_model_to_string(TetMaterial::default_model()),
+		float					youngs_modulus = TetMaterial::default_youngs_modulus(),
+		float					poisson_ratio = TetMaterial::default_poisson_ratio(),
+		float					density = TetMaterial::default_density(),
+		float					mass = TetMaterial::default_mass(),
+		float					d_hat = ClothMaterial::default_d_hat(),
+		float					contact_offset = ClothMaterial::default_contact_offset())
 	{
-		wd->set_material_type(lcs::Initializer::MaterialType::Tetrahedral);
+		wd->set_material_type(lcs::Material::MaterialType::Tetrahedral);
 		TetMaterial mat;
+		mat.model = parse_tet_model(model);
 		mat.youngs_modulus = youngs_modulus;
 		mat.poisson_ratio = poisson_ratio;
 		mat.density = density;
 		mat.mass = mass;
 		mat.is_shell = false;
+		mat.d_hat = d_hat;
+		mat.contact_offset = contact_offset;
 		wd->set_physics_material(mat);
 		return *this;
 	}
 
 	// Expose rigid material setter
 	WorldDataWrapper& set_physics_material_rigid(
-		float thickness = RigidMaterial::default_thickness(),
-		float stiffness = RigidMaterial::default_stiffness(),
-		float density = RigidMaterial::default_density(),
-		float mass = RigidMaterial::default_mass())
+		const std::string_view& model = rigid_model_to_string(RigidMaterial::default_model()),
+		float					thickness = RigidMaterial::default_thickness(),
+		float					stiffness = RigidMaterial::default_stiffness(),
+		float					density = RigidMaterial::default_density(),
+		float					mass = RigidMaterial::default_mass(),
+		float					d_hat = ClothMaterial::default_d_hat(),
+		float					contact_offset = ClothMaterial::default_contact_offset())
 	{
-		wd->set_material_type(lcs::Initializer::MaterialType::Rigid);
+		wd->set_material_type(lcs::Material::MaterialType::Rigid);
 		RigidMaterial mat;
+		mat.model = parse_rigid_model(model);
 		mat.thickness = thickness;
 		mat.stiffness = stiffness;
 		mat.density = density;
 		mat.mass = mass;
+		mat.d_hat = d_hat;
+		mat.contact_offset = contact_offset;
 		wd->set_physics_material(mat);
 		return *this;
 	}
 
 	// Expose rod material setter
 	WorldDataWrapper& set_physics_material_rod(
-		float radius = RodMaterial::default_radius(),
-		float bending_stiffness = RodMaterial::default_bending_stiffness(),
-		float twisting_stiffness = RodMaterial::default_twisting_stiffness(),
-		float density = RodMaterial::default_density(),
-		float mass = RodMaterial::default_mass())
+		const std::string_view& model = rod_model_to_string(RodMaterial::default_model()),
+		float					radius = RodMaterial::default_radius(),
+		float					bending_stiffness = RodMaterial::default_bending_stiffness(),
+		float					twisting_stiffness = RodMaterial::default_twisting_stiffness(),
+		float					density = RodMaterial::default_density(),
+		float					mass = RodMaterial::default_mass(),
+		float					d_hat = ClothMaterial::default_d_hat(),
+		float					contact_offset = ClothMaterial::default_contact_offset())
 	{
-		wd->set_material_type(lcs::Initializer::MaterialType::Rod);
+		wd->set_material_type(lcs::Material::MaterialType::Rod);
 		RodMaterial mat;
+		mat.model = parse_rod_model(model);
 		mat.radius = radius;
 		mat.bending_stiffness = bending_stiffness;
 		mat.twisting_stiffness = twisting_stiffness;
@@ -143,14 +135,8 @@ struct WorldDataWrapper
 		return *this;
 	}
 
-	WorldDataWrapper& add_fixed_point_info(const MakeFixedPointsInterface& info)
-	{
-		wd->add_fixed_point_info(info);
-		return *this;
-	}
-
 	// Convenience: add fixed-point rule by name and optional numeric range/list
-	WorldDataWrapper& add_fixed_point_by_method(const std::string& method, float range)
+	WorldDataWrapper& add_fixed_point_by_method(const std::string_view& method, float range)
 	{
 		MakeFixedPointsInterface mfp;
 		mfp.method = parse_fixed_method_py(method);
@@ -161,7 +147,7 @@ struct WorldDataWrapper
 	}
 
 	// Convenience: add explicit vertex indices as fixed points
-	WorldDataWrapper& add_fixed_point_indices(py::array_t<int, py::array::c_style | py::array::forcecast> indices)
+	WorldDataWrapper& add_fixed_point_by_indices(py::array_t<int, py::array::c_style | py::array::forcecast> indices)
 	{
 		if (indices.ndim() != 1)
 			throw std::runtime_error("indices must be a 1-D array of ints");
@@ -194,6 +180,24 @@ struct WorldDataWrapper
 		return *this;
 	}
 
+	std::array<float, 3> get_rest_translation() const
+	{
+		auto t = wd->translation;
+		return std::array<float, 3>{ t.x, t.y, t.z };
+	}
+
+	std::array<float, 3> get_rest_rotation() const
+	{
+		auto r = wd->rotation;
+		return std::array<float, 3>{ r.x, r.y, r.z };
+	}
+
+	std::array<float, 3> get_rest_scale() const
+	{
+		auto s = wd->scale;
+		return std::array<float, 3>{ s.x, s.y, s.z };
+	}
+
 	std::string get_name() const
 	{
 		return wd->get_model_name();
@@ -201,6 +205,89 @@ struct WorldDataWrapper
 	uint get_registration_index() const
 	{
 		return wd->get_registration_index();
+	}
+
+	py::list get_fixed_point_indices() const
+	{
+		const auto& indices = wd->fixed_point_indices;
+		py::list	out;
+		for (auto idx : indices)
+			out.append(static_cast<uint32_t>(idx));
+		return out;
+	}
+
+	py::array_t<float> get_rest_positions() const
+	{
+		const auto		   rest = wd->get_rest_positions();
+		py::array_t<float> out({ rest.size(), static_cast<size_t>(3) });
+		auto			   buf = out.mutable_unchecked<2>();
+		for (size_t i = 0; i < rest.size(); ++i)
+		{
+			buf(i, 0) = rest[i][0];
+			buf(i, 1) = rest[i][1];
+			buf(i, 2) = rest[i][2];
+		}
+		return out;
+	}
+};
+
+// Read-only wrapper for APIs that return const WorldData&.
+struct ConstWorldDataWrapper
+{
+	const WorldData* wd;
+	ConstWorldDataWrapper(const WorldData* w)
+		: wd(w)
+	{
+	}
+
+	std::string get_name() const
+	{
+		return wd->get_model_name();
+	}
+	uint get_registration_index() const
+	{
+		return wd->get_registration_index();
+	}
+
+	py::list get_fixed_point_indices() const
+	{
+		const auto& indices = wd->fixed_point_indices;
+		py::list	out;
+		for (auto idx : indices)
+			out.append(static_cast<uint32_t>(idx));
+		return out;
+	}
+
+	py::array_t<float> get_rest_positions() const
+	{
+		const auto		   rest = wd->get_rest_positions();
+		py::array_t<float> out({ rest.size(), static_cast<size_t>(3) });
+		auto			   buf = out.mutable_unchecked<2>();
+		for (size_t i = 0; i < rest.size(); ++i)
+		{
+			buf(i, 0) = rest[i][0];
+			buf(i, 1) = rest[i][1];
+			buf(i, 2) = rest[i][2];
+		}
+		return out;
+	}
+
+	std::array<float, 3> get_rest_translation() const
+	{
+		auto t = wd->translation;
+		return std::array<float, 3>{ t.x, t.y, t.z };
+	}
+
+	std::array<float, 3> get_rest_rotation() const
+	{
+		auto r = wd->rotation;
+		return std::array<float, 3>{ r.x, r.y, r.z };
+	}
+
+	std::array<float, 3> get_rest_scale() const
+	{
+		auto s = wd->scale;
+		return std::array<float, 3>{ s.x, s.y, s.z };
 	}
 };
 
@@ -215,9 +302,9 @@ struct PyNewtonBuilder
 	}
 
 	// register_mesh accepts numpy arrays (vertices Nx3, triangles Mx3)
-	WorldDataWrapper register_mesh_from_array(const std::string&	   name,
-		py::array_t<double, py::array::c_style | py::array::forcecast> vertices,
-		py::array_t<int, py::array::c_style | py::array::forcecast>	   triangles)
+	WorldDataWrapper create_world_data_from_array(const std::string_view& name,
+		py::array_t<double, py::array::c_style | py::array::forcecast>	  vertices,
+		py::array_t<int, py::array::c_style | py::array::forcecast>		  triangles)
 	{
 		// Validate shapes
 		if (vertices.ndim() != 2 || vertices.shape(1) != 3)
@@ -253,30 +340,61 @@ struct PyNewtonBuilder
 			input_triangles[i] = f;
 		}
 
-		return WorldDataWrapper(&solver_ptr->register_world_data_from_array(name, input_vertices, input_triangles));
+		auto world_data = std::make_shared<WorldData>();
+		world_data->set_name(name);
+		world_data->load_mesh_from_array(input_vertices, input_triangles);
+		return WorldDataWrapper(world_data);
 	}
-	// register mesh from an obj file path: read file then compute auxiliary topology
-	WorldDataWrapper register_mesh_from_file_path(const std::string& name, const std::string& obj_file_path)
+	// create world data from an obj file path; call register_world_data() to add into solver
+	WorldDataWrapper create_world_data_from_file_path(const std::string_view& name, const std::string_view& obj_file_path)
 	{
-		return WorldDataWrapper(&solver_ptr->register_world_data_from_file_path(name, obj_file_path));
+		auto world_data = std::make_shared<WorldData>();
+		world_data->set_name(name);
+		world_data->load_mesh_from_path(obj_file_path);
+		return WorldDataWrapper(world_data);
+	}
+
+	uint register_world_data(const WorldDataWrapper& world_data)
+	{
+		if (!world_data.wd)
+			throw std::runtime_error("Invalid world data handle.");
+		return solver_ptr->register_world_data(*world_data.wd);
 	}
 
 	// expose method to get number of registered meshes
-	size_t num_meshes() const { return solver_ptr->get_world_data().size(); }
+	size_t num_meshes() const { return solver_ptr->get_sorted_world_data().size(); }
 
 	// expose a method to export registered meshes as python lists (simple)
 	py::list get_mesh_names() const
 	{
-		py::list				 out;
-		const auto&				 world_data = solver_ptr->get_world_data();
-		std::vector<std::string> names(world_data.size());
-		for (const auto& w : world_data)
+		py::list					  out;
+		const auto&					  world_data = solver_ptr->get_sorted_world_data();
+		std::vector<std::string_view> names(world_data.size());
+		// for (const auto& w : world_data)
+		// {
+		// 	names[w.get_registration_index()] = w.get_model_name();
+		// }
+		for (uint registration_id = 0; registration_id < world_data.size(); ++registration_id)
 		{
-			names[w.get_registration_index()] = w.get_model_name();
+			const uint	sorted_idx = solver_ptr->query_sorted_index_by_registration_id(registration_id);
+			const auto& w = world_data[sorted_idx];
+			names[registration_id] = w.get_model_name();
 		}
 		for (const auto& name : names)
 			out.append(name);
 		return out;
+	}
+
+	// Debug helper to print registered meshes info in C++ logs
+	void print_registered_meshes_info() const
+	{
+		auto& world_data = solver_ptr->get_sorted_world_data();
+		for (auto& w : world_data)
+		{
+			auto& mesh = w.get_mesh();
+			LUISA_INFO("Mesh '{}': registration_id={}, num_verts={}, num_faces={}",
+				w.get_model_name(), w.get_registration_index(), mesh.model_positions.size(), mesh.faces.size());
+		}
 	}
 
 	// Initialize underlying NewtonSolver using the device previously set via init_device()/set_device().
@@ -284,6 +402,18 @@ struct PyNewtonBuilder
 	{
 		solver_ptr->init_solver();
 		LUISA_INFO("Solver initialized.");
+	}
+
+	// Load a full scene from JSON, including world_data and scene params.
+	// This should be called before init_solver().
+	void load_scene_from_json(const std::string_view& json_path)
+	{
+		Demo::Simulation::load_scene_params_from_json(
+			[&](const lcs::Initializer::WorldData& wd)
+			{
+				solver_ptr->register_world_data(wd);
+			},
+			std::string(json_path));
 	}
 
 	void physics_step_cpu()
@@ -308,7 +438,7 @@ struct PyNewtonBuilder
 	}
 
 	// Update a pinned vertex position on the solver (mesh local vertex id, target position)
-	void update_pinned_verts_position(const unsigned int			  mesh_idx,
+	void update_per_vertex_animation(const unsigned int				  mesh_idx,
 		const unsigned int											  local_vid,
 		py::array_t<float, py::array::c_style | py::array::forcecast> target_pos)
 	{
@@ -320,7 +450,26 @@ struct PyNewtonBuilder
 
 		auto				 buf = target_pos.unchecked<1>();
 		std::array<float, 3> tp{ buf(0), buf(1), buf(2) };
-		solver_ptr->update_pinned_verts_position(mesh_idx, local_vid, tp);
+		solver_ptr->update_per_vertex_animation(mesh_idx, local_vid, tp);
+	}
+
+	// Update a pinned body state on the solver (body id, target translation and rotation)
+	void update_per_body_animation(const unsigned int				  mesh_idx,
+		py::array_t<float, py::array::c_style | py::array::forcecast> target_translation,
+		py::array_t<float, py::array::c_style | py::array::forcecast> target_rotation)
+	{
+		if (!solver_ptr)
+			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
+		if (target_translation.ndim() != 1 || target_translation.shape(0) != 3)
+			throw std::runtime_error("target_translation must be a 1-D array of length 3 (x,y,z)");
+		if (target_rotation.ndim() != 1 || target_rotation.shape(0) != 3)
+			throw std::runtime_error("target_rotation must be a 1-D array of length 3 (x,y,z)");
+
+		auto				 buf_t = target_translation.unchecked<1>();
+		std::array<float, 3> tt{ buf_t(0), buf_t(1), buf_t(2) };
+		auto				 buf_r = target_rotation.unchecked<1>();
+		std::array<float, 3> tr{ buf_r(0), buf_r(1), buf_r(2) };
+		solver_ptr->update_per_body_animation(mesh_idx, tt, tr);
 	}
 
 	// Return simulation results as a tuple of (vertices_list, faces_list) of numpy arrays.
@@ -356,6 +505,26 @@ struct PyNewtonBuilder
 		return py::make_tuple(py_verts, py_faces);
 	}
 
+	uint query_local_vid_from_global_vid(const uint global_vid) const
+	{
+		if (!solver_ptr)
+			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
+
+		const auto& mapping = solver_ptr->get_host_mesh_data().sa_global_vid_to_local_vid;
+		return (global_vid < mapping.size()) ? mapping[global_vid] : std::numeric_limits<uint>::max();
+	}
+
+	uint query_registration_vid_from_global_vid(const uint global_vid) const
+	{
+		if (!solver_ptr)
+			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
+
+		const std::vector<uint>& mapping1 = solver_ptr->get_host_mesh_data().sa_vert_mesh_id;
+		const uint				 sorted_idx = (global_vid < mapping1.size()) ? mapping1[global_vid] : std::numeric_limits<uint>::max();
+		const uint				 registration_id = solver_ptr->query_registration_id_by_sorted_index(sorted_idx);
+		return registration_id;
+	}
+
 	py::tuple get_object_sim_result_by_registration_id(uint registration_id)
 	{
 		if (!solver_ptr)
@@ -376,39 +545,12 @@ struct PyNewtonBuilder
 		return py::make_tuple(v_arr, f_arr);
 	}
 
-	py::tuple get_object_sim_result_by_unique_name(const std::string& unique_name)
+	ConstWorldDataWrapper get_object_by_registration_id(uint registration_id) const
 	{
-		if (!solver_ptr)
-			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
-
-		std::vector<std::array<float, 3>> object_vertices;
-		std::vector<std::array<uint, 3>>  object_triangles;
-		solver_ptr->get_object_sim_result_by_unique_name(unique_name, object_vertices, object_triangles);
-
-		py::array_t<float> v_arr({ (size_t)object_vertices.size(), (size_t)3 });
-		if (!object_vertices.empty())
-			std::memcpy(v_arr.mutable_data(), object_vertices.data(), object_vertices.size() * 3 * sizeof(float));
-
-		py::array_t<uint32_t> f_arr({ (size_t)object_triangles.size(), (size_t)3 });
-		if (!object_triangles.empty())
-			std::memcpy(f_arr.mutable_data(), object_triangles.data(), object_triangles.size() * 3 * sizeof(uint32_t));
-
-		return py::make_tuple(v_arr, f_arr);
+		return ConstWorldDataWrapper(&solver_ptr->get_object_by_registration_id(registration_id));
 	}
 
-	WorldDataWrapper get_object_by_registration_id(uint registration_id) const
-	{
-		const uint sorted_idx = solver_ptr->query_object_index_by_registration_id(registration_id);
-		return WorldDataWrapper(&solver_ptr->get_world_data()[sorted_idx]);
-	}
-
-	WorldDataWrapper get_object_by_unique_name(const std::string& unique_name) const
-	{
-		const uint sorted_idx = solver_ptr->query_object_index_by_unique_name(unique_name);
-		return WorldDataWrapper(&solver_ptr->get_world_data()[sorted_idx]);
-	}
-
-	void save_sim_result(const std::string& full_path)
+	void save_sim_result(const std::string_view& full_path)
 	{
 		if (!solver_ptr)
 			throw std::runtime_error("Solver not initialized. Call init_solver() first.");
@@ -486,50 +628,51 @@ struct PyNewtonBuilder
 
 PYBIND11_MODULE(lcs_py, m)
 {
-	py::enum_<lcs::Initializer::MaterialType>(m, "MaterialType")
-		.value("Cloth", lcs::Initializer::MaterialType::Cloth)
-		.value("Tetrahedral", lcs::Initializer::MaterialType::Tetrahedral)
-		.value("Rigid", lcs::Initializer::MaterialType::Rigid)
-		.value("Rod", lcs::Initializer::MaterialType::Rod)
+	py::enum_<lcs::Material::MaterialType>(m, "MaterialType")
+		.value("Particle", lcs::Material::MaterialType::Particle)
+		.value("Cloth", lcs::Material::MaterialType::Cloth)
+		.value("Tetrahedral", lcs::Material::MaterialType::Tetrahedral)
+		.value("Rigid", lcs::Material::MaterialType::Rigid)
+		.value("Rod", lcs::Material::MaterialType::Rod)
 		.export_values();
 
-	py::class_<ClothMaterial>(m, "ClothMaterial")
-		.def(py::init<>())
-		.def_readwrite("thickness", &ClothMaterial::thickness)
-		.def_readwrite("youngs_modulus", &ClothMaterial::youngs_modulus)
-		.def_readwrite("poisson_ratio", &ClothMaterial::poisson_ratio)
-		.def_readwrite("area_bending_stiffness", &ClothMaterial::area_bending_stiffness)
-		.def_readwrite("mass", &ClothMaterial::mass)
-		.def_readwrite("density", &ClothMaterial::density);
+	// py::class_<ClothMaterial>(m, "ClothMaterial")
+	// 	.def(py::init<>())
+	// 	.def_readwrite("thickness", &ClothMaterial::thickness)
+	// 	.def_readwrite("youngs_modulus", &ClothMaterial::youngs_modulus)
+	// 	.def_readwrite("poisson_ratio", &ClothMaterial::poisson_ratio)
+	// 	.def_readwrite("area_bending_stiffness", &ClothMaterial::area_bending_stiffness)
+	// 	.def_readwrite("mass", &ClothMaterial::mass)
+	// 	.def_readwrite("density", &ClothMaterial::density);
 
-	py::class_<TetMaterial>(m, "TetMaterial")
-		.def(py::init<>())
-		.def_readwrite("youngs_modulus", &TetMaterial::youngs_modulus)
-		.def_readwrite("poisson_ratio", &TetMaterial::poisson_ratio)
-		.def_readwrite("mass", &TetMaterial::mass)
-		.def_readwrite("density", &TetMaterial::density)
-		.def_readwrite("d_hat", &TetMaterial::d_hat)
-		.def_readwrite("friction_mu", &TetMaterial::friction_mu);
+	// py::class_<TetMaterial>(m, "TetMaterial")
+	// 	.def(py::init<>())
+	// 	.def_readwrite("youngs_modulus", &TetMaterial::youngs_modulus)
+	// 	.def_readwrite("poisson_ratio", &TetMaterial::poisson_ratio)
+	// 	.def_readwrite("mass", &TetMaterial::mass)
+	// 	.def_readwrite("density", &TetMaterial::density)
+	// 	.def_readwrite("d_hat", &TetMaterial::d_hat)
+	// 	.def_readwrite("friction_mu", &TetMaterial::friction_mu);
 
-	py::class_<RigidMaterial>(m, "RigidMaterial")
-		.def(py::init<>())
-		.def_readwrite("thickness", &RigidMaterial::thickness)
-		.def_readwrite("stiffness", &RigidMaterial::stiffness)
-		.def_readwrite("is_solid", &RigidMaterial::is_solid)
-		.def_readwrite("mass", &RigidMaterial::mass)
-		.def_readwrite("density", &RigidMaterial::density)
-		.def_readwrite("d_hat", &RigidMaterial::d_hat)
-		.def_readwrite("friction_mu", &RigidMaterial::friction_mu);
+	// py::class_<RigidMaterial>(m, "RigidMaterial")
+	// 	.def(py::init<>())
+	// 	.def_readwrite("thickness", &RigidMaterial::thickness)
+	// 	.def_readwrite("stiffness", &RigidMaterial::stiffness)
+	// 	.def_readwrite("is_solid", &RigidMaterial::is_solid)
+	// 	.def_readwrite("mass", &RigidMaterial::mass)
+	// 	.def_readwrite("density", &RigidMaterial::density)
+	// 	.def_readwrite("d_hat", &RigidMaterial::d_hat)
+	// 	.def_readwrite("friction_mu", &RigidMaterial::friction_mu);
 
-	py::class_<RodMaterial>(m, "RodMaterial")
-		.def(py::init<>())
-		.def_readwrite("radius", &RodMaterial::radius)
-		.def_readwrite("bending_stiffness", &RodMaterial::bending_stiffness)
-		.def_readwrite("twisting_stiffness", &RodMaterial::twisting_stiffness)
-		.def_readwrite("mass", &RodMaterial::mass)
-		.def_readwrite("density", &RodMaterial::density)
-		.def_readwrite("d_hat", &RodMaterial::d_hat)
-		.def_readwrite("friction_mu", &RodMaterial::friction_mu);
+	// py::class_<RodMaterial>(m, "RodMaterial")
+	// 	.def(py::init<>())
+	// 	.def_readwrite("radius", &RodMaterial::radius)
+	// 	.def_readwrite("bending_stiffness", &RodMaterial::bending_stiffness)
+	// 	.def_readwrite("twisting_stiffness", &RodMaterial::twisting_stiffness)
+	// 	.def_readwrite("mass", &RodMaterial::mass)
+	// 	.def_readwrite("density", &RodMaterial::density)
+	// 	.def_readwrite("d_hat", &RodMaterial::d_hat)
+	// 	.def_readwrite("friction_mu", &RodMaterial::friction_mu);
 
 	py::class_<MakeFixedPointsInterface>(m, "MakeFixedPointsInterface")
 		.def(py::init<>())
@@ -541,48 +684,85 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("set_simulation_type", &WorldDataWrapper::set_simulation_type)
 		.def("set_physics_material_cloth",
 			&WorldDataWrapper::set_physics_material_cloth,
+			py::arg("stretch_model") = std::string(cloth_stretch_model_to_string(ClothMaterial::default_stretch_model())),
+			py::arg("bending_model") = std::string(cloth_bending_model_to_string(ClothMaterial::default_bending_model())),
 			py::arg("thickness") = ClothMaterial::default_thickness(),
 			py::arg("youngs_modulus") = ClothMaterial::default_youngs_modulus(),
 			py::arg("poisson_ratio") = ClothMaterial::default_poisson_ratio(),
-			py::arg("area_bending_stiffness") = ClothMaterial::default_area_bending_stiffness())
+			py::arg("area_bending_stiffness") = ClothMaterial::default_area_bending_stiffness(),
+			py::arg("d_hat") = ClothMaterial::default_d_hat(),
+			py::arg("contact_offset") = ClothMaterial::default_contact_offset())
 		.def("set_physics_material_tet",
 			&WorldDataWrapper::set_physics_material_tet,
+			py::arg("model") = std::string(tet_model_to_string(TetMaterial::default_model())),
 			py::arg("youngs_modulus") = TetMaterial::default_youngs_modulus(),
 			py::arg("poisson_ratio") = TetMaterial::default_poisson_ratio(),
 			py::arg("density") = TetMaterial::default_density(),
-			py::arg("mass") = TetMaterial::default_mass())
+			py::arg("mass") = TetMaterial::default_mass(),
+			py::arg("d_hat") = ClothMaterial::default_d_hat(),
+			py::arg("contact_offset") = ClothMaterial::default_contact_offset())
 		.def("set_physics_material_rigid",
 			&WorldDataWrapper::set_physics_material_rigid,
+			py::arg("model") = std::string(rigid_model_to_string(RigidMaterial::default_model())),
 			py::arg("thickness") = RigidMaterial::default_thickness(),
 			py::arg("stiffness") = RigidMaterial::default_stiffness(),
 			py::arg("density") = RigidMaterial::default_density(),
-			py::arg("mass") = RigidMaterial::default_mass())
+			py::arg("mass") = RigidMaterial::default_mass(),
+			py::arg("d_hat") = ClothMaterial::default_d_hat(),
+			py::arg("contact_offset") = ClothMaterial::default_contact_offset())
 		.def("set_physics_material_rod",
 			&WorldDataWrapper::set_physics_material_rod,
+			py::arg("model") = std::string(rod_model_to_string(RodMaterial::default_model())),
 			py::arg("radius") = RodMaterial::default_radius(),
 			py::arg("bending_stiffness") = RodMaterial::default_bending_stiffness(),
 			py::arg("twisting_stiffness") = RodMaterial::default_twisting_stiffness(),
 			py::arg("density") = RodMaterial::default_density(),
-			py::arg("mass") = RodMaterial::default_mass())
-		.def("add_fixed_point_info", &WorldDataWrapper::add_fixed_point_info)
+			py::arg("mass") = RodMaterial::default_mass(),
+			py::arg("d_hat") = ClothMaterial::default_d_hat(),
+			py::arg("contact_offset") = ClothMaterial::default_contact_offset())
 		.def("add_fixed_point_by_method", &WorldDataWrapper::add_fixed_point_by_method, py::arg("method"), py::arg("range") = 0.001f)
-		.def("add_fixed_point_indices", &WorldDataWrapper::add_fixed_point_indices, py::arg("indices"))
+		.def("add_fixed_point_by_indices", &WorldDataWrapper::add_fixed_point_by_indices, py::arg("indices"))
 		.def("set_translation", &WorldDataWrapper::set_translation)
 		.def("set_rotation", &WorldDataWrapper::set_rotation)
 		.def("set_scale", &WorldDataWrapper::set_scale)
+		.def("get_rest_translation", &WorldDataWrapper::get_rest_translation)
+		.def("get_rest_rotation", &WorldDataWrapper::get_rest_rotation)
+		.def("get_rest_scale", &WorldDataWrapper::get_rest_scale)
 		.def("get_name", &WorldDataWrapper::get_name)
-		.def("get_registration_index", &WorldDataWrapper::get_registration_index);
+		.def("get_id", &WorldDataWrapper::get_registration_index)
+		.def("get_registration_index", &WorldDataWrapper::get_registration_index)
+		.def("get_fixed_point_indices", &WorldDataWrapper::get_fixed_point_indices,
+			"Return currently registered fixed-point local vertex indices as a Python list")
+		.def("get_rest_positions", &WorldDataWrapper::get_rest_positions,
+			"Return rest positions (after object transform) as an (N,3) float32 numpy array");
 
-	// disambiguate overloaded register_mesh signatures
+	py::class_<ConstWorldDataWrapper>(m, "ConstWorldData")
+		.def("get_name", &ConstWorldDataWrapper::get_name)
+		.def("get_registration_index", &ConstWorldDataWrapper::get_registration_index)
+		.def("get_fixed_point_indices", &ConstWorldDataWrapper::get_fixed_point_indices,
+			"Return currently registered fixed-point local vertex indices as a Python list")
+		.def("get_rest_positions", &ConstWorldDataWrapper::get_rest_positions,
+			"Return rest positions (after object transform) as an (N,3) float32 numpy array")
+		.def("get_rest_translation", &ConstWorldDataWrapper::get_rest_translation)
+		.def("get_rest_rotation", &ConstWorldDataWrapper::get_rest_rotation)
+		.def("get_rest_scale", &ConstWorldDataWrapper::get_rest_scale);
+
+	// disambiguate overloaded world_data creation signatures
 	using VertArr = py::array_t<double, py::array::c_style | py::array::forcecast>;
 	using TriArr = py::array_t<int, py::array::c_style | py::array::forcecast>;
 
 	py::class_<PyNewtonBuilder>(m, "NewtonSolver")
 		.def(py::init<>())
-		.def("register_mesh_from_array", &PyNewtonBuilder::register_mesh_from_array, py::arg("name"), py::arg("vertices"), py::arg("triangles"))
-		.def("register_mesh_from_file_path", &PyNewtonBuilder::register_mesh_from_file_path, py::arg("name"), py::arg("obj_file_path"))
+		.def("create_world_data_from_array", &PyNewtonBuilder::create_world_data_from_array, py::arg("name"), py::arg("vertices"), py::arg("triangles"))
+		.def("create_world_data_from_file_path", &PyNewtonBuilder::create_world_data_from_file_path, py::arg("name"), py::arg("obj_file_path"))
+		.def("register_world_data", &PyNewtonBuilder::register_world_data, py::arg("world_data"), "Register configured WorldData and return object registration id")
+		.def("load_scene_from_json",
+			&PyNewtonBuilder::load_scene_from_json,
+			py::arg("json_path"),
+			"Load world_data and scene params from a JSON scene file (same format as app_simulation).")
 		.def("num_meshes", &PyNewtonBuilder::num_meshes)
 		.def("get_mesh_names", &PyNewtonBuilder::get_mesh_names)
+		.def("print_registered_meshes_info", &PyNewtonBuilder::print_registered_meshes_info, "Print registered meshes info")
 		.def("init_device",
 			&PyNewtonBuilder::init_device,
 			py::arg("backend_name") = py::none(),
@@ -609,18 +789,20 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("physics_step_cpu", &PyNewtonBuilder::physics_step_cpu)
 		.def("physics_step_gpu", &PyNewtonBuilder::physics_step_gpu)
 		.def("restart_system", &PyNewtonBuilder::restart_system, "Reset positions/velocities to initial rest state")
-		.def("update_pinned_verts_position", &PyNewtonBuilder::update_pinned_verts_position, py::arg("mesh_idx"), py::arg("local_vid"), py::arg("target_pos"))
+		.def("update_per_vertex_animation", &PyNewtonBuilder::update_per_vertex_animation, py::arg("mesh_idx"), py::arg("local_vid"), py::arg("target_pos"))
+		.def("update_per_body_animation", &PyNewtonBuilder::update_per_body_animation, py::arg("mesh_idx"), py::arg("target_translation"), py::arg("target_rotation"))
 		.def("get_sim_result", &PyNewtonBuilder::get_sim_result, "Return simulation results as a tuple (vertices_list, faces_list) of numpy arrays")
+		.def("query_local_vid_from_global_vid",
+			&PyNewtonBuilder::query_local_vid_from_global_vid,
+			"Return global-vertex-id to local-vertex-id mapping as a 1-D uint32 numpy array")
+		.def("query_registration_vid_from_global_vid",
+			&PyNewtonBuilder::query_registration_vid_from_global_vid,
+			"Return global-vertex-id to world_data(sorted mesh) index mapping as a 1-D uint32 numpy array")
 		.def("get_object_sim_result_by_registration_id",
 			&PyNewtonBuilder::get_object_sim_result_by_registration_id,
 			py::arg("registration_id"),
 			"Return one object simulation result as tuple (vertices, faces) by registration id")
-		.def("get_object_sim_result_by_unique_name",
-			&PyNewtonBuilder::get_object_sim_result_by_unique_name,
-			py::arg("unique_name"),
-			"Return one object simulation result as tuple (vertices, faces) by unique object name")
 		.def("get_object_by_registration_id", &PyNewtonBuilder::get_object_by_registration_id, py::arg("registration_id"))
-		.def("get_object_by_unique_name", &PyNewtonBuilder::get_object_by_unique_name, py::arg("unique_name"))
 		.def("save_sim_result", &PyNewtonBuilder::save_sim_result, py::arg("obj_path"));
 
 	// Expose luisa::float3 so Python can access .x/.y/.z on floor, gravity, etc.
@@ -641,6 +823,8 @@ PYBIND11_MODULE(lcs_py, m)
 		.def_readwrite("use_energy_linesearch", &lcs::SceneParams::use_energy_linesearch)
 		.def_readwrite("use_ccd_linesearch", &lcs::SceneParams::use_ccd_linesearch)
 		.def_readwrite("print_system_energy", &lcs::SceneParams::print_system_energy)
+		.def_readwrite("print_pcg_info", &lcs::SceneParams::print_pcg_info)
+		.def_readwrite("print_collision_info", &lcs::SceneParams::print_collision_info)
 		.def_readwrite("use_floor", &lcs::SceneParams::use_floor)
 		.def_readwrite("use_self_collision", &lcs::SceneParams::use_self_collision)
 		.def_readwrite("output_per_frame", &lcs::SceneParams::output_per_frame)

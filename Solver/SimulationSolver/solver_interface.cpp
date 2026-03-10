@@ -56,6 +56,8 @@ namespace lcs
 	{
 		set_data_pointer(solver_data, solver_helper);
 
+		init_world_data();
+
 		// Init data
 		{
 			lcs::Initializer::init_mesh_data(world_data, host_mesh_data);
@@ -111,30 +113,154 @@ namespace lcs
 				true);
 		}
 
-		init_animation(world_data);
+		init_animation();
 	}
-	void SolverInterface::init_animation(const std::vector<lcs::Initializer::WorldData>& world_datas)
+	void SolverInterface::init_world_data()
 	{
+		const uint num_meshes = world_data.size();
+
+		using namespace lcs::Initializer;
+		using namespace lcs::Material;
+
+		// Sort world data by material type, for better memory coherence in simulation and easier management
+		{
+			std::sort(world_data.begin(),
+				world_data.end(),
+				[](const Initializer::WorldData& left, const Initializer::WorldData& right)
+				{
+					if (left.material_type != right.material_type)
+						return int(left.material_type) < int(right.material_type);
+					return left.get_registration_index() < right.get_registration_index();
+				});
+
+			for (uint i = 0; i < num_meshes; i++)
+			{
+				world_data[i].sorted_index = i;
+			}
+		}
+
+		// Pre-process materials
+		for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
+		{
+			auto&		shell_info = world_data[meshIdx];
+			const auto& input_mesh = shell_info.get_mesh();
+			if (input_mesh.model_positions.empty())
+			{
+				LUISA_ERROR("Mesh {} has no vertex positions.", shell_info.get_model_name());
+			}
+
+			if (shell_info.material_type == MaterialType::Cloth)
+			{
+				if (!shell_info.holds<ClothMaterial>())
+				{
+					shell_info.set_physics_material(ClothMaterial());
+				}
+				auto& mat = shell_info.get_material<ClothMaterial>();
+				mat.is_shell = true; // Cloth material must be shell
+			}
+			else if (shell_info.material_type == MaterialType::Tetrahedral)
+			{
+				if (!shell_info.holds<TetMaterial>())
+				{
+					shell_info.set_physics_material(TetMaterial());
+				}
+				auto& mat = shell_info.get_material<TetMaterial>();
+				mat.is_shell = false; // Tetrahedral mesh must be solid
+			}
+			else if (shell_info.material_type == MaterialType::Rigid)
+			{
+				if (!shell_info.holds<RigidMaterial>())
+				{
+					shell_info.set_physics_material(RigidMaterial());
+				}
+				const bool has_boundary =
+					input_mesh.dihedral_edges.size() != input_mesh.edges.size();
+
+				auto& mat = shell_info.get_material<RigidMaterial>();
+				mat.is_shell = !mat.is_solid;
+				if (mat.is_shell)
+				{
+					if (has_boundary)
+					{
+						// TODO: Later we may construct a virtual volume mesh for shell
+						LUISA_ERROR("Non-closed mesh simulation is currently not supported for rigid body ");
+					}
+				}
+				else
+				{
+					if (has_boundary)
+					{
+						LUISA_ERROR("The solid mesh is not closed");
+					}
+					mat.thickness = 0.0f;
+				}
+			}
+			else if (shell_info.material_type == MaterialType::Rod)
+			{
+				if (!shell_info.holds<RodMaterial>())
+				{
+					shell_info.set_physics_material(RodMaterial());
+				}
+				auto& mat = shell_info.get_material<RodMaterial>();
+				mat.is_shell = true;
+			}
+		}
+	}
+	void SolverInterface::init_animation()
+	{
+		vid_to_animation_idx_map.clear();
+		body_to_animation_idx_map.clear();
+		per_vertex_animations.clear();
+		per_body_animations.clear();
+
+		//
 		for (uint mesh_idx = 0; mesh_idx < host_mesh_data->num_meshes; mesh_idx++)
 		{
-			const auto& world_data = world_datas[mesh_idx];
+			const auto& wd = world_data[mesh_idx];
 			const uint	prefix_vid = host_mesh_data->prefix_num_verts[mesh_idx];
 			const uint	suffix_vid = host_mesh_data->prefix_num_verts[mesh_idx + 1];
-			for (uint index = 0; index < world_data.fixed_point_indices.size(); index++)
+
+			if (!wd.fixed_point_indices.empty())
 			{
-				const uint local_vid = world_data.fixed_point_indices[index];
-				const uint global_vid = prefix_vid + local_vid;
-				// const auto rest_pos = world_data.get_rest_position(local_vid);
-				const float3 rest_pos = host_mesh_data->sa_rest_x[global_vid];
-				vid_to_animation_idx_map[global_vid] = per_vertex_animations.size();
-				per_vertex_animations.push_back({
-					.vertex_id = global_vid,
-					.translation = { rest_pos[0], rest_pos[1], rest_pos[2] },
-				});
-				// LUISA_INFO(" -> Init animation for mesh {}, local_vid {}, global_vid {}, rest_pos ({:.3f}, {:.3f}, {:.3f})",
-				// 	mesh_idx, local_vid, global_vid, rest_pos[0], rest_pos[1], rest_pos[2]);
+				if (wd.holds<lcs::Material::RigidMaterial>())
+				{
+					const uint local_vid = wd.fixed_point_indices.front();
+					const uint global_vid = prefix_vid + local_vid;
+					const uint dof_idx = host_sim_data->sa_x_to_dof_map[global_vid].get_dof_idx();
+
+					Animation::PerBodyAnimation body_anim;
+					{
+						const auto rest_t = wd.translation;
+						const auto rest_r = wd.rotation;
+						const auto rest_s = wd.scale;
+						body_anim.dof_start = dof_idx;
+						body_anim.set_translation(rest_t.x, rest_t.y, rest_t.z);
+						body_anim.set_rotation(rest_r.x, rest_r.y, rest_r.z);
+						body_anim.set_scale(1.0f, 1.0f, 1.0f); // Since we use |AAT-I|, we don't explicitly animate scale
+					}
+					body_to_animation_idx_map[mesh_idx] = per_body_animations.size();
+					per_body_animations.push_back(body_anim);
+				}
+				else
+				{
+					for (uint index = 0; index < wd.fixed_point_indices.size(); index++)
+					{
+						const uint local_vid = wd.fixed_point_indices[index];
+						const uint global_vid = prefix_vid + local_vid;
+						const auto rest_pos = wd.get_rest_position(local_vid);
+
+						Animation::PerVertexAnimation vertex_anim;
+						{
+							vertex_anim.vertex_id = global_vid;
+							vertex_anim.set_translation(rest_pos.x, rest_pos.y, rest_pos.z);
+						}
+						vid_to_animation_idx_map[global_vid] = per_vertex_animations.size();
+						per_vertex_animations.push_back(vertex_anim);
+						// LUISA_INFO(" -> Init animation for mesh {}, local_vid {}, global_vid {}, rest_pos ({:.3f}, {:.3f}, {:.3f})",
+						// 	mesh_idx, local_vid, global_vid, rest_pos[0], rest_pos[1], rest_pos[2]);
+					}
+				}
 			}
-			//  per_body_animations;
 		}
 	}
 	void SolverInterface::compile(AsyncCompiler& compiler)
@@ -186,33 +312,26 @@ namespace lcs
 			host_sim_data->sa_q_v_outer[vid] = desire_vel;
 		}
 
-		// Now we only have fixed animation
-		const uint prefix_dof_abd = host_sim_data->num_verts_soft;
-		for (uint body_idx = 0; body_idx < host_sim_data->num_affine_bodies; body_idx++)
+		for (uint index = 0; index < per_body_animations.size(); index++)
 		{
-			const bool is_fixed = host_sim_data->sa_q_is_fixed[prefix_dof_abd + 4 * body_idx] != 0;
-			if (is_fixed)
-			{
-				const uint dof_idx = prefix_dof_abd + body_idx * 4;
+			const auto& animate = per_body_animations[index];
 
-				float4x3 rest_q;
-				rest_q[0] = host_sim_data->sa_rest_q[dof_idx + 0];
-				rest_q[1] = host_sim_data->sa_rest_q[dof_idx + 1];
-				rest_q[2] = host_sim_data->sa_rest_q[dof_idx + 2];
-				rest_q[3] = host_sim_data->sa_rest_q[dof_idx + 3];
+			const uint dof_idx = animate.dof_start;
 
-				float4x3 curr_q;
-				curr_q[0] = host_sim_data->sa_q_outer[dof_idx + 0];
-				curr_q[1] = host_sim_data->sa_q_outer[dof_idx + 1];
-				curr_q[2] = host_sim_data->sa_q_outer[dof_idx + 2];
-				curr_q[3] = host_sim_data->sa_q_outer[dof_idx + 3];
+			auto	 transform = animate.to_transform_matrix();
+			float4x3 target_q = AffineBodyDynamics::extract_q_from_affine_matrix(transform);
 
-				auto desire_vel = (rest_q - curr_q) / get_scene_params().implicit_dt;
-				host_sim_data->sa_q_v_outer[dof_idx + 0] = desire_vel[0];
-				host_sim_data->sa_q_v_outer[dof_idx + 1] = desire_vel[1];
-				host_sim_data->sa_q_v_outer[dof_idx + 2] = desire_vel[2];
-				host_sim_data->sa_q_v_outer[dof_idx + 3] = desire_vel[3];
-			}
+			float4x3 curr_q;
+			curr_q[0] = host_sim_data->sa_q_outer[dof_idx + 0u];
+			curr_q[1] = host_sim_data->sa_q_outer[dof_idx + 1u];
+			curr_q[2] = host_sim_data->sa_q_outer[dof_idx + 2u];
+			curr_q[3] = host_sim_data->sa_q_outer[dof_idx + 3u];
+
+			auto desire_vel = (target_q - curr_q) / get_scene_params().implicit_dt;
+			host_sim_data->sa_q_v_outer[dof_idx + 0u] = desire_vel[0];
+			host_sim_data->sa_q_v_outer[dof_idx + 1u] = desire_vel[1];
+			host_sim_data->sa_q_v_outer[dof_idx + 2u] = desire_vel[2];
+			host_sim_data->sa_q_v_outer[dof_idx + 3u] = desire_vel[3];
 		}
 
 		buffer_copy(host_sim_data->sa_q_outer, host_sim_data->sa_q_step_start);
@@ -320,35 +439,70 @@ namespace lcs
 			}
 		}
 	}
-	void SolverInterface::update_pinned_verts_position(const uint meshIdx,
-		const uint												  local_vid,
-		const std::array<float, 3>&								  pinned_verts_target_position)
+	void SolverInterface::update_per_vertex_animation(const uint registerIdx,
+		const uint												 local_vid,
+		const std::array<float, 3>&								 target_position)
 	{
-		const uint sortedIdx = host_mesh_data->input_to_sorted_mesh_id[meshIdx];
+		const uint sortedIdx = host_mesh_data->input_to_sorted_mesh_id[registerIdx];
 		const uint prefix = host_mesh_data->prefix_num_verts[sortedIdx];
-		const uint vid = prefix + local_vid;
-		if (vid_to_animation_idx_map.contains(vid))
+		const uint global_vid = prefix + local_vid;
+		if (vid_to_animation_idx_map.contains(global_vid))
 		{
-			const uint animation_idx = vid_to_animation_idx_map[vid];
-			per_vertex_animations[animation_idx].translation = pinned_verts_target_position;
+			const uint animation_idx = vid_to_animation_idx_map[global_vid];
+			per_vertex_animations[animation_idx].set_translation(target_position[0], target_position[1], target_position[2]);
 		}
 		else
 		{
-			LUISA_ERROR("Vertex {} in mesh {} is not a pinned vertex. Cannot update position.", local_vid, meshIdx);
-			// uint animation_idx = per_vertex_animations.size();
-			// vid_to_animation_idx_map[vid] = animation_idx;
-			// per_vertex_animations.push_back(
-			// 	{ vid, { pinned_verts_target_position[0], pinned_verts_target_position[1], pinned_verts_target_position[2] } });
+			LUISA_ERROR("Vertex {} in mesh {} (Sorted = {}) is not a pinned vertex. Cannot update position.", local_vid, registerIdx, sortedIdx);
 		}
 	}
-	void SolverInterface::update_pinned_body_state(const uint body_id,
-		const std::array<float, 3>&							  translation,
-		const std::array<float, 4>&							  rotation)
+	void SolverInterface::update_per_body_animation(const uint registerIdx,
+		const std::array<float, 3>&							   target_translation,
+		const std::array<float, 3>&							   target_rotation)
 	{
-		Animation::PerBodyAnimation tmp;
-		tmp.set_translation(translation[0], translation[1], translation[2]);
-		tmp.set_rotation(rotation[0], rotation[1], rotation[2], rotation[3]);
-		per_body_animations.push_back(tmp);
+		const uint sortedIdx = host_mesh_data->input_to_sorted_mesh_id[registerIdx];
+
+		if (body_to_animation_idx_map.contains(sortedIdx))
+		{
+			const uint animation_idx = body_to_animation_idx_map[sortedIdx];
+			per_body_animations[animation_idx].set_translation(target_translation[0], target_translation[1], target_translation[2]);
+			per_body_animations[animation_idx].set_rotation(target_rotation[0], target_rotation[1], target_rotation[2]);
+		}
+		else
+		{
+			LUISA_ERROR("Mesh {} (SortedIdx = {}) is not a pinned rigid body. Cannot update state.", registerIdx, sortedIdx);
+		}
+	}
+	void SolverInterface::update_default_animations()
+	{
+		const uint curr_frame = get_scene_params().current_frame;
+
+		// Animation for fixed points
+		for (uint sorted_idx = 0; sorted_idx < world_data.size(); sorted_idx++)
+		{
+			// Just sample code for animation, you can replace it with your own animation logic
+			const float curr_time = curr_frame * lcs::get_scene_params().implicit_dt;
+			auto&		wd = world_data[sorted_idx];
+			const uint	register_idx = wd.get_registration_index();
+			if (!wd.fixed_point_default_animations.empty())
+			{
+				if (wd.holds<Material::RigidMaterial>())
+				{
+					lcs::Animation::PerBodyAnimation tmp_body_animations;
+					wd.update_default_body_animations(curr_time, tmp_body_animations);
+					update_per_body_animation(register_idx, tmp_body_animations.translation, tmp_body_animations.rotation);
+				}
+				else
+				{
+					std::vector<lcs::Animation::PerVertexAnimation> tmp_vertex_animations;
+					wd.update_default_vertex_animations(curr_time, tmp_vertex_animations);
+					for (const auto& animate : tmp_vertex_animations)
+					{
+						update_per_vertex_animation(register_idx, animate.vertex_id, animate.translation);
+					}
+				}
+			}
+		}
 	}
 
 	void SolverInterface::save_current_frame_state_to_host(const std::string_view& full_path)
@@ -382,15 +536,15 @@ namespace lcs
 			LUISA_ERROR("Unable to open file: {}", full_path);
 		}
 	}
-	static float3 fn_apply_template(const std::vector<uint>& sa_x_to_dof_map,
-		const std::vector<float3>&							 sa_scaled_model_x,
-		const std::vector<float3>&							 input_q,
-		const uint											 vid)
+	static float3 fn_apply_template(const std::vector<VertexToDofMap>& sa_x_to_dof_map,
+		const std::vector<float3>&									   sa_scaled_model_x,
+		const std::vector<float3>&									   input_q,
+		const uint													   vid)
 	{
 		float3	   new_dx;
-		const uint map_info = sa_x_to_dof_map[vid];
-		const uint dof_idx = map_info & (~Attributions::RIGID_BODY_FLAG);
-		if ((map_info & Attributions::RIGID_BODY_FLAG) == 0) // Soft body
+		const auto map_info = sa_x_to_dof_map[vid];
+		const uint dof_idx = map_info.get_dof_idx();
+		if (map_info.is_soft_body()) // Soft body
 		{
 			new_dx = input_q[dof_idx];
 		}
@@ -408,7 +562,7 @@ namespace lcs
 		return new_dx;
 	};
 
-	uint SolverInterface::query_object_index_by_registration_id(uint registration_id) const
+	uint SolverInterface::query_sorted_index_by_registration_id(uint registration_id) const
 	{
 		if (registration_id >= host_mesh_data->input_to_sorted_mesh_id.size())
 		{
@@ -417,16 +571,13 @@ namespace lcs
 		return host_mesh_data->input_to_sorted_mesh_id[registration_id];
 	}
 
-	uint SolverInterface::query_object_index_by_unique_name(const std::string& unique_name) const
+	uint SolverInterface::query_registration_id_by_sorted_index(uint sorted_index) const
 	{
-		auto find = std::find_if(world_data.begin(), world_data.end(), [&](const lcs::Initializer::WorldData& data)
-			{ return data.get_model_name() == unique_name; });
-		if (find == world_data.end())
+		if (sorted_index >= host_mesh_data->num_meshes)
 		{
-			LUISA_ERROR("Invalid unique name '{}'. Multiple objects found with the same name.", unique_name);
+			LUISA_ERROR("Invalid sorted index {}. Out of range.", sorted_index);
 		}
-		uint found_sorted_idx = std::distance(world_data.begin(), find);
-		return found_sorted_idx;
+		return host_mesh_data->sorted_to_input_mesh_id[sorted_index];
 	}
 
 	static void fn_get_object_sim_result_by_sorted_index(const lcs::MeshData<std::vector>* host_mesh_data,
@@ -465,19 +616,7 @@ namespace lcs
 		std::vector<std::array<float, 3>>&								output_positions,
 		std::vector<std::array<uint, 3>>&								output_triangles)
 	{
-		const uint sorted_idx = query_object_index_by_registration_id(registration_id);
-		fn_get_object_sim_result_by_sorted_index(host_mesh_data,
-			host_sim_data,
-			sorted_idx,
-			output_positions,
-			output_triangles);
-	}
-
-	void SolverInterface::get_object_sim_result_by_unique_name(const std::string& unique_name,
-		std::vector<std::array<float, 3>>&										  output_positions,
-		std::vector<std::array<uint, 3>>&										  output_triangles)
-	{
-		const uint sorted_idx = query_object_index_by_unique_name(unique_name);
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
 		fn_get_object_sim_result_by_sorted_index(host_mesh_data,
 			host_sim_data,
 			sorted_idx,
@@ -784,6 +923,8 @@ namespace lcs
 			throw std::runtime_error("Device already initialized. Call cleanup_device() first"
 									 "or use set_device_from_pointers() to set external device and stream.");
 
+		luisa::log_level_info();
+
 		LUISA_INFO("Creating luisa compute context/device/stream...");
 
 		device_state.owned_context = std::make_unique<luisa::compute::Context>(binary_path);
@@ -811,7 +952,7 @@ namespace lcs
 
 		try
 		{
-			auto dev = device_state.owned_context->create_device(backend, nullptr, true);
+			auto dev = device_state.owned_context->create_device(backend, nullptr, false);
 			device_state.owned_device = std::make_unique<luisa::compute::Device>(std::move(dev));
 			auto st = device_state.owned_device->create_stream(luisa::compute::StreamTag::COMPUTE);
 			device_state.owned_stream = std::make_unique<luisa::compute::Stream>(std::move(st));

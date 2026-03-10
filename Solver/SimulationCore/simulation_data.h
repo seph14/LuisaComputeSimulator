@@ -12,6 +12,174 @@
 
 namespace lcs
 {
+	struct VertexToDofMap
+	{
+	public:
+		static constexpr uint flag_is_rigid_body = 1 << 31;
+		static constexpr uint mask_extract_dof_idx = ~flag_is_rigid_body;
+
+	public:
+		uint map_info;
+		void set_as_soft_body(const uint dof_idx)
+		{
+			map_info = dof_idx;
+		}
+		void set_as_rigid_body(const uint dof_idx)
+		{
+			map_info = dof_idx | flag_is_rigid_body;
+		}
+		bool is_soft_body() const { return (map_info & flag_is_rigid_body) == 0; }
+		bool is_rigid_body() const { return (map_info & flag_is_rigid_body) != 0; }
+		uint get_dof_idx() const { return map_info & mask_extract_dof_idx; }
+	};
+
+	struct VertexProperty
+	{
+	private:
+		void set_attribution(const uint bit, bool value)
+		{
+			if (value)
+				attribute_info |= bit;
+			else
+				attribute_info &= ~bit;
+		}
+
+	public:
+		static constexpr uint flag_is_fixex = 1 << 0;
+		static constexpr uint flag_is_rigid_body = 1 << 1;
+		static constexpr uint flag_is_self_collision_disabled = 1 << 2;
+		static constexpr uint flag_is_ccd_disabled = 1 << 3;
+		static constexpr uint flag_is_friction_disabled = 1 << 4;
+		static constexpr uint flag_is_gravity_disabled = 1 << 5;
+		static constexpr uint flag_is_init_penetrated = 1 << 6;
+
+	public:
+		uint attribute_info = 0;
+		bool is_fixed() const { return (attribute_info & flag_is_fixex) != 0; }
+		bool is_rigid_body() const { return (attribute_info & flag_is_rigid_body) != 0; }
+		bool is_soft_body() const { return (attribute_info & flag_is_rigid_body) == 0; }
+		// bool is_self_collision_disabled() const { return (attribute_info & flag_is_self_collision_disabled) != 0; }
+		// bool is_ccd_disabled() const { return (attribute_info & flag_is_ccd_disabled) != 0; }
+		// bool is_friction_disabled() const { return (attribute_info & flag_is_friction_disabled) != 0; }
+		// bool is_gravity_disabled() const { return (attribute_info & flag_is_gravity_disabled) != 0; }
+		bool is_init_penetrated() const { return (attribute_info & flag_is_init_penetrated) != 0; }
+		uint get_object_id() const { return (attribute_info >> 16) & 0x7FFF; }
+
+	public:
+		void set_is_fixed()
+		{
+			set_attribution(flag_is_fixex, true);
+		}
+		void set_is_soft_body()
+		{
+			set_attribution(flag_is_rigid_body, false);
+		}
+		void set_is_rigid_body()
+		{
+			set_attribution(flag_is_rigid_body, true);
+		}
+		// void set_self_collision_disabled()
+		// {
+		// 	set_attribution(0x200, true);
+		// }
+		// void set_ccd_disabled()
+		// {
+		// 	set_attribution(0x400, true);
+		// }
+		// void set_friction_disabled()
+		// {
+		// 	set_attribution(0x800, true);
+		// }
+		// void set_gravity_disabled()
+		// {
+		// 	set_attribution(0x1000, true);
+		// }
+		void set_is_init_penetrated()
+		{
+			set_attribution(flag_is_init_penetrated, true);
+		}
+		void set_is_not_init_penetrated()
+		{
+			set_attribution(flag_is_init_penetrated, false);
+		}
+		void set_object_id(const uint object_id)
+		{
+			attribute_info = (attribute_info & 0xFFFF) | ((object_id & 0x7FFF) << 16);
+		}
+	};
+
+	struct DofProperty
+	{
+	private:
+		void set_attribution(const uint bit, bool value)
+		{
+			if (value)
+				attribute_info |= bit;
+			else
+				attribute_info &= ~bit;
+		}
+
+	public:
+		static constexpr uint flag_is_fixex = 1 << 0;
+		static constexpr uint flag_is_rigid_body = 1 << 1;
+		static constexpr uint flag_is_translation_dof = 1 << 2;
+
+	public:
+		uint attribute_info = 0;
+		bool is_fixed() const { return (attribute_info & flag_is_fixex) != 0; }
+		bool is_rigid() const { return (attribute_info & flag_is_rigid_body) != 0; }
+		bool is_translation_dof() const { return (attribute_info & flag_is_translation_dof) != 0; }
+
+	public:
+		void set_is_fixed()
+		{
+			set_attribution(flag_is_fixex, true);
+		}
+		void set_is_soft()
+		{
+			set_attribution(flag_is_rigid_body, false);
+		}
+		void set_is_rigid()
+		{
+			set_attribution(flag_is_rigid_body, true);
+		}
+		void set_is_translation_dof()
+		{
+			set_attribution(flag_is_translation_dof, true);
+		}
+	};
+
+} // namespace lcs
+
+// clang-format off
+LUISA_STRUCT(lcs::VertexToDofMap, map_info)
+{
+	luisa::compute::Var<bool> is_soft_body() const { return (map_info & lcs::VertexToDofMap::flag_is_rigid_body) == 0; }
+	luisa::compute::Var<bool> is_rigid_body() const { return (map_info & lcs::VertexToDofMap::flag_is_rigid_body) != 0; }
+	luisa::compute::Var<uint> get_dof_idx() const { return map_info & lcs::VertexToDofMap::mask_extract_dof_idx; }
+};
+
+LUISA_STRUCT(lcs::VertexProperty, attribute_info)
+{
+	luisa::compute::Var<bool> is_fixed() const { return (attribute_info & lcs::VertexProperty::flag_is_fixex) != 0; }
+	luisa::compute::Var<bool> is_rigid_body() const { return (attribute_info & lcs::VertexProperty::flag_is_rigid_body) != 0; }
+	luisa::compute::Var<bool> is_soft_body() const { return (attribute_info & lcs::VertexProperty::flag_is_rigid_body) == 0; }
+	luisa::compute::Var<bool> is_init_penetrated() const { return (attribute_info & lcs::VertexProperty::flag_is_init_penetrated) != 0; }
+	luisa::compute::Var<uint> get_object_id() const { return (attribute_info >> 16) & 0x7FFF; }
+	void set_is_init_penetrated() { attribute_info |= lcs::VertexProperty::flag_is_init_penetrated; }
+	void set_is_not_init_penetrated() { attribute_info &= ~lcs::VertexProperty::flag_is_init_penetrated; }
+};
+
+LUISA_STRUCT(lcs::DofProperty, attribute_info)
+{
+	luisa::compute::Var<bool> is_fixed() const { return (attribute_info & lcs::DofProperty::flag_is_fixex) != 0; }
+	luisa::compute::Var<bool> is_rigid() const { return (attribute_info & lcs::DofProperty::flag_is_rigid_body) != 0; }
+	luisa::compute::Var<bool> is_translation_dof() const { return (attribute_info & lcs::DofProperty::flag_is_translation_dof) != 0; }
+};
+// clang-format on
+
+namespace lcs
+{
 	using ushort = uint16_t;
 	template <template <typename...> typename BufferType>
 	struct ColoredData : SimulationType
@@ -95,7 +263,7 @@ namespace lcs
 		template <template <typename...> typename BufferType, typename Derived>
 		struct ConstitutionInterface : SimulationType
 		{
-			BufferType<ushort>	 constraint_offsets_in_adjlist;
+			BufferType<uint>	 constraint_offsets_in_adjlist;
 			BufferType<float3>	 constraint_gradients;
 			BufferType<float3x3> constraint_hessians;
 
@@ -277,15 +445,6 @@ namespace lcs
 	//     BufferType<uint>               sa_vert_adj_material_force_verts_csr;
 	// };
 
-	namespace Attributions
-	{
-		static constexpr uint32_t RIGID_BODY_FLAG = 1u << 31;
-		static constexpr uint32_t RIGID_BODY_MASK = ~RIGID_BODY_FLAG;
-
-		static constexpr uint32_t ABD_Is_Translation_DOF = 1u << 30;
-
-	} // namespace Attributions
-
 	template <template <typename...> typename BufferType>
 	struct SimulationData : SimulationType
 	{
@@ -298,6 +457,8 @@ namespace lcs
 		BufferType<float3> sa_q_step_start; // Input
 		BufferType<float3> sa_q_tilde;		// Re-calculate every frame
 		BufferType<float3> sa_dq;			// Re-calculate every frame
+
+		BufferType<VertexProperty> sa_x_property; // Constant
 
 		std::vector<float3> sa_q_outer;	  // Input from outer
 		std::vector<float3> sa_q_v_outer; // Input from outer
@@ -312,11 +473,9 @@ namespace lcs
 		BufferType<float3> sa_x_step_start;
 		BufferType<float3> sa_x_iter_start;
 
-		// If value & (1<<31) == 0, then it's a soft body vert, map to dof directly;
-		//                 else it's a rigid body vert, map to dof by affine body id
-		BufferType<uint> sa_x_to_dof_map;
-		BufferType<uint> sa_q_is_fixed;
-		BufferType<uint> sa_q_property; // Constant
+		BufferType<VertexToDofMap> sa_x_to_dof_map;
+		BufferType<uint>		   sa_q_is_fixed;
+		BufferType<DofProperty>	   sa_q_property; // Constant
 
 		std::vector<float3> sa_x_outer;
 		std::vector<float3> sa_v_outer;

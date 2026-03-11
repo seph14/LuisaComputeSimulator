@@ -247,6 +247,12 @@ namespace lcs::Initializer
 				{ return m.d_hat; },
 				physics_material);
 		}
+		float get_contact_offset() const
+		{
+			return std::visit([](auto const& m) noexcept
+				{ return m.contact_offset; },
+				physics_material);
+		}
 		float get_friction_mu() const
 		{
 			return std::visit([](auto const& m) noexcept

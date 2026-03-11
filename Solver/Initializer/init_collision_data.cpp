@@ -115,7 +115,7 @@ namespace lcs::Initializer
 		{
 			const bool is_rigid_body = world_data[mesh_idx].holds<Material::RigidMaterial>();
 
-			float thickness = world_data[mesh_idx].get_thickness();
+			float thickness = world_data[mesh_idx].get_contact_offset();
 			float d_hat = world_data[mesh_idx].get_d_hat();
 
 			float scaled_offset = 0.5f * thickness;

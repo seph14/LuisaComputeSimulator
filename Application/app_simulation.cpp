@@ -106,17 +106,18 @@ int main(int argc, char** argv)
 	constexpr bool draw_bounding_box = false;
 	constexpr bool use_ui = true;
 
-	const auto& world_data = solver.get_sorted_world_data();
+	const auto& sorted_data = solver.get_sorted_world_data();
+	const uint	num_meshes = sorted_data.size();
 
 	// Init rendering data
-	std::vector<std::vector<std::array<float, 3>>> sa_rendering_vertices(world_data.size() + 0 + 0);
-	std::vector<std::vector<std::array<uint, 3>>>  sa_rendering_faces(world_data.size() + 0 + 0);
-	std::vector<std::vector<std::array<float, 3>>> face_color(world_data.size());
+	std::vector<std::vector<std::array<float, 3>>> sa_rendering_vertices(num_meshes);
+	std::vector<std::vector<std::array<uint, 3>>>  sa_rendering_faces(num_meshes);
+	std::vector<std::vector<std::array<float, 3>>> face_color(num_meshes);
 	{
-		for (uint meshIdx = 0; meshIdx < world_data.size(); meshIdx++)
+		solver.get_rest_vertices_to_host(sa_rendering_vertices);
+		solver.get_triangles_to_host(sa_rendering_faces);
+		for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
 		{
-			world_data[meshIdx].get_rest_positions(sa_rendering_vertices[meshIdx]);
-			sa_rendering_faces[meshIdx] = world_data[meshIdx].get_mesh().faces;
 			face_color[meshIdx].resize(sa_rendering_faces[meshIdx].size(), { 0.7, 0.2, 0.3 });
 		}
 	}
@@ -197,9 +198,9 @@ int main(int argc, char** argv)
 		polyscope::init("openGL3_glfw");
 		std::vector<polyscope::SurfaceMesh*> surface_meshes;
 
-		for (uint meshIdx = 0; meshIdx < world_data.size(); meshIdx++)
+		for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
 		{
-			const std::string&		curr_mesh_name = world_data[meshIdx].get_model_name() + std::to_string(meshIdx);
+			const std::string&		curr_mesh_name = solver.get_object_by_registration_id(meshIdx).get_model_name() + std::to_string(meshIdx);
 			polyscope::SurfaceMesh* curr_mesh_ptr = polyscope::registerSurfaceMesh(
 				curr_mesh_name, sa_rendering_vertices[meshIdx], sa_rendering_faces[meshIdx]);
 			curr_mesh_ptr->setEnabled(true);
@@ -209,9 +210,9 @@ int main(int argc, char** argv)
 
 		auto fn_update_GUI_vertices = [&]()
 		{
-			for (uint clothIdx = 0; clothIdx < world_data.size(); clothIdx++)
+			for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
 			{
-				surface_meshes[clothIdx]->updateVertexPositions(sa_rendering_vertices[clothIdx]);
+				surface_meshes[meshIdx]->updateVertexPositions(sa_rendering_vertices[meshIdx]);
 			}
 		};
 		auto fn_single_step_with_ui = [&]()

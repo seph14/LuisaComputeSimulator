@@ -11,8 +11,7 @@
 #include "Energies/soft_inertia_energy.h"
 #include "Energies/spring_energy.h"
 #include "Energies/stretch_face_energy.h"
-#include "Energy/bending_energy.h"
-#include "Energy/stretch_energy.h"
+#include "Energies/tet_elastic_energy.h"
 #include "Initializer/init_collision_data.h"
 #include "Initializer/init_sim_data.h"
 #include "Utils/cpu_parallel.h"
@@ -76,8 +75,8 @@ namespace lcs
 		}
 
 		{
-			lbvh_data_face->allocate(device, host_mesh_data->num_faces, lcs::LBVHTreeTypeFace);
-			lbvh_data_edge->allocate(device, host_mesh_data->num_edges, lcs::LBVHTreeTypeEdge);
+			lbvh_data_face->allocate(device, host_sim_data->sa_contact_active_faces.size(), lcs::LBVHTreeTypeFace);
+			lbvh_data_edge->allocate(device, host_sim_data->sa_contact_active_edges.size(), lcs::LBVHTreeTypeEdge);
 			lcs::Initializer::init_lbvh_data(device, stream, lbvh_data_face);
 			lcs::Initializer::init_lbvh_data(device, stream, lbvh_data_edge);
 			// lbvh_cloth_vert.unit_test(device, stream);
@@ -174,7 +173,7 @@ namespace lcs
 					shell_info.set_physics_material(RigidMaterial());
 				}
 				const bool has_boundary =
-					input_mesh.dihedral_edges.size() != input_mesh.edges.size();
+					input_mesh.dihedral_edges.size() != input_mesh.surface_edges.size();
 
 				auto& mat = shell_info.get_material<RigidMaterial>();
 				mat.is_shell = !mat.is_solid;
@@ -797,7 +796,7 @@ namespace lcs
 	{
 		using namespace luisa::compute;
 		const bool					 use_debug_info = false;
-		luisa::compute::ShaderOption default_option = { .enable_debug_info = false };
+		luisa::compute::ShaderOption default_option = compiler.default_option();
 
 		compiler.compile<1>(fn_reset_float,
 			[](Var<BufferView<float>> buffer)
@@ -811,6 +810,7 @@ namespace lcs
 		ground_collision_energy =
 			std::make_unique<GroundCollisionEnergy>(mesh_data->sa_rest_vert_area.view(),
 				mesh_data->sa_is_fixed.view(),
+				sim_data->sa_contact_active_verts.view(),
 				sim_data->sa_contact_active_verts_offset.view(),
 				sim_data->sa_contact_active_verts_d_hat.view(),
 				sim_data->sa_contact_active_verts_friction_coeff.view(),
@@ -830,6 +830,9 @@ namespace lcs
 		bending_energy = std::make_unique<BendingEnergy>(sim_data->sa_system_energy.view());
 		bending_energy->compile(compiler);
 
+		tet_elastic_energy = std::make_unique<TetElasticEnergy>(sim_data->sa_system_energy.view());
+		tet_elastic_energy->compile(compiler);
+
 		abd_inertia_energy =
 			std::make_unique<AbdInertiaEnergy>(sim_data->sa_q_tilde.view(), sim_data->sa_system_energy.view());
 		abd_inertia_energy->compile(compiler);
@@ -843,7 +846,7 @@ namespace lcs
 		const luisa::compute::Buffer<float3>& curr_x = sim_data->sa_x;
 		const luisa::compute::Buffer<float3>& curr_q = sim_data->sa_q;
 
-		stream << fn_reset_float(sim_data->sa_system_energy).dispatch(8);
+		stream << fn_reset_float(sim_data->sa_system_energy).dispatch(num_energy_slots);
 
 		const auto& soft_inertia_constitution = sim_data->get_soft_inertia_data();
 		if (soft_inertia_constitution.is_valid())
@@ -873,7 +876,7 @@ namespace lcs
 				get_scene_params().use_floor,
 				get_scene_params().stiffness_collision,
 				get_scene_params().contact_energy_type,
-				mesh_data->num_verts);
+				sim_data->sa_contact_active_verts.size());
 		}
 
 		const auto& stretch_spring_constitution = sim_data->get_stretch_spring_data();
@@ -900,8 +903,15 @@ namespace lcs
 				bending_edge_constitution.get_num_indices());
 		}
 
+		const auto& stress_tet_constitution = sim_data->get_stress_tet_data();
+		if (stress_tet_constitution.is_valid())
+		{
+			tet_elastic_energy->device_compute_energy(
+				stream, stress_tet_constitution, curr_x, stress_tet_constitution.get_num_indices());
+		}
+
 		auto& host_energy = host_sim_data->sa_system_energy;
-		stream << sim_data->sa_system_energy.view(0, 8).copy_to(host_energy.data()) << luisa::compute::synchronize();
+		stream << sim_data->sa_system_energy.view(0, num_energy_slots).copy_to(host_energy.data()) << luisa::compute::synchronize();
 
 		energy_list.insert(std::make_pair("Inertia Soft Body", host_energy[offset_inertia]));
 		energy_list.insert(std::make_pair("Inertia Rigid Body", host_energy[offset_abd_inertia]));
@@ -911,6 +921,7 @@ namespace lcs
 		energy_list.insert(std::make_pair("Stretch Face", host_energy[offset_stretch_face]));
 		energy_list.insert(std::make_pair("Cloth Bending", host_energy[offset_bending]));
 		energy_list.insert(std::make_pair("ABD Orthogonality", host_energy[offset_abd_ortho]));
+		energy_list.insert(std::make_pair("Tet Elastic", host_energy[offset_tet_elastic]));
 	};
 
 	// ---------------------------------------------------------------------------

@@ -4,8 +4,8 @@
 #include "Core/float_n.h"
 #include "Core/float_nxn.h"
 #include "Core/lc_to_eigen.h"
-#include "Energy/bending_energy.h"
-#include "Energy/stretch_energy.h"
+#include "Energies/detail/bending_energy.hpp"
+#include "Energies/detail/fem_utils.h"
 #include "Initializer/init_mesh_data.h"
 #include "MeshOperation/mesh_reader.h"
 #include "Initializer/initializer_utils.h"
@@ -222,7 +222,7 @@ namespace lcs::Initializer
 			const uint num_dof = adj_map.size();
 			const uint num_constraint = constitution_template.get_num_indices();
 
-			LUISA_INFO("Init constraint {:12}: numElement = {}, stride = {}", Derived::get_constitution_name(), num_constraint, N);
+			LUISA_INFO("     Init energy {:12}: stride = {}, numElement = {}", Derived::get_constitution_name(), N, num_constraint);
 
 			const auto& sa_constitution_elements = constitution_template.get_indices();
 			auto&		gradient = constitution_template.get_constraint_gradients();
@@ -364,10 +364,10 @@ namespace lcs::Initializer
 					use_spring = mesh_info.get_material<ClothMaterial>().stretch_model
 						== ConstitutiveStretchModelCloth::Spring;
 				}
-				// else if (mesh_info.holds<TetMaterial>())
-				// {
-				//     use_spring = mesh_info.get_material<TetMaterial>().model == ConstitutiveModelTet::Spring;
-				// }
+				else if (mesh_info.holds<TetMaterial>())
+				{
+					use_spring = mesh_info.get_material<TetMaterial>().model == ConstitutiveModelTet::Spring;
+				}
 				// else if (shell_info.holds<RigidMaterial>())
 				// {
 				//     use_spring = shell_info.get<RigidMaterial>().model == ConstitutiveModelRigid::Spring;
@@ -420,11 +420,19 @@ namespace lcs::Initializer
 			{
 				const uint	mesh_idx = mesh_data->sa_tet_mesh_id[tid];
 				const auto& mesh_info = world_data[mesh_idx];
-				bool		use_stress = mesh_info.holds<TetMaterial>();
-				uint4		tet = mesh_data->sa_tetrahedrons[tid];
-				bool		is_dynamic = cull_unused_constraints ? !mesh_data->sa_is_fixed[tet[0]] || !mesh_data->sa_is_fixed[tet[1]]
-						   || !mesh_data->sa_is_fixed[tet[2]] || !mesh_data->sa_is_fixed[tet[3]]
-																 : true;
+				bool		use_stress = false;
+				if (mesh_info.holds<TetMaterial>())
+				{
+					auto model = mesh_info.get_material<TetMaterial>().model;
+					use_stress = model == ConstitutiveModelTet::StableNeoHookean
+						|| model == ConstitutiveModelTet::ARAP
+						|| model == ConstitutiveModelTet::Corotated
+						|| model == ConstitutiveModelTet::StVK;
+				}
+				uint4 tet = mesh_data->sa_tetrahedrons[tid];
+				bool  is_dynamic = cull_unused_constraints ? !mesh_data->sa_is_fixed[tet[0]] || !mesh_data->sa_is_fixed[tet[1]]
+						 || !mesh_data->sa_is_fixed[tet[2]] || !mesh_data->sa_is_fixed[tet[3]]
+														   : true;
 				return (use_stress && is_dynamic) ? 1 : 0;
 			},
 			mesh_data->num_tets);
@@ -664,13 +672,28 @@ namespace lcs::Initializer
 						lcs::length_vec(x1 - x2);
 
 					const auto& mesh_info = world_data[mesh_data->sa_edge_mesh_id[orig_eid]];
-					const auto& material = mesh_info.get_material<ClothMaterial>();
-
-					const float E = material.youngs_modulus;
-					const float nu = material.poisson_ratio;
-					auto [mu, lambda] = StretchEnergy::convert_prop(E, nu);
-					mu = mu * material.thickness; // scale by thickness
-					stretch_spring_data.sa_stretch_spring_stiffness[eid] = mu;
+					float		stiffness = 1.0f;
+					if (mesh_info.holds<ClothMaterial>())
+					{
+						const auto& material = mesh_info.get_material<ClothMaterial>();
+						const float E = material.youngs_modulus;
+						const float nu = material.poisson_ratio;
+						auto [mu, lambda] = FemUtils::convert_lame_params_2d(E, nu);
+						stiffness = mu * material.thickness; // scale by thickness
+					}
+					else if (mesh_info.holds<TetMaterial>())
+					{
+						const auto& material = mesh_info.get_material<TetMaterial>();
+						const float E = material.youngs_modulus;
+						const float nu = material.poisson_ratio;
+						auto [mu, lambda] = FemUtils::convert_lame_params_3d(E, nu);
+						stiffness = mu;
+					}
+					else if (mesh_info.holds<RodMaterial>())
+					{
+						stiffness = mesh_info.get_material<RodMaterial>().bending_stiffness;
+					}
+					stretch_spring_data.sa_stretch_spring_stiffness[eid] = stiffness;
 				});
 
 			// Rest stretch face length
@@ -692,7 +715,7 @@ namespace lcs::Initializer
 					const float3& x_1 = vert_pos[1];
 					const float3& x_2 = vert_pos[2];
 
-					const float2x2 inv_duv = StretchEnergy::get_Dm_inv(x_0, x_1, x_2);
+					const float2x2 inv_duv = FemUtils::get_Dm_inv(x_0, x_1, x_2);
 					const float	   area = compute_face_area(x_0, x_1, x_2);
 
 					const auto& mesh_info = world_data[mesh_data->sa_face_mesh_id[orig_fid]];
@@ -701,7 +724,7 @@ namespace lcs::Initializer
 					const float E = material.youngs_modulus;
 					const float nu = material.poisson_ratio;
 
-					auto [mu, lambda] = StretchEnergy::convert_prop(E, nu);
+					auto [mu, lambda] = FemUtils::convert_lame_params_2d(E, nu);
 					mu = material.thickness * mu; // scale by thickness
 					lambda = material.thickness * lambda;
 					stretch_face_data.sa_stretch_faces_mu_lambda[fid] =
@@ -739,7 +762,7 @@ namespace lcs::Initializer
 						const float3& x2 = vert_pos[2];
 						const float3& x3 = vert_pos[3];
 
-						const float angle = lcs::BendingEnergyUtils::compute_theta(x0, x1, x2, x3);
+						const float angle = lcs::detail::bending_energy::compute_theta(x0, x1, x2, x3);
 
 						const float A1 = compute_face_area(x0, x1, x2);
 						const float A2 = compute_face_area(x0, x1, x3);
@@ -791,6 +814,7 @@ namespace lcs::Initializer
 			// Rest tetrahedron info
 			auto& stress_tet_data = sim_data->get_stress_tet_data();
 			stress_tet_data.constraint_indices.resize(num_stress_tets);
+			stress_tet_data.sa_stress_tets_model.resize(num_stress_tets);
 			stress_tet_data.sa_stress_tets_rest_volume.resize(num_stress_tets);
 			stress_tet_data.sa_stress_tets_mu_lambda.resize(num_stress_tets);
 			stress_tet_data.sa_stress_tets_Dm_inv.resize(num_stress_tets);
@@ -798,12 +822,14 @@ namespace lcs::Initializer
 				num_stress_tets,
 				[&](const uint tid)
 				{
-					const uint	  orig_tid = stress_tet_indices[tid];
-					uint4		  tet = mesh_data->sa_tetrahedrons[orig_tid];
-					const float3  vert_pos[4] = { mesh_data->sa_rest_x[tet[0]],
-						 mesh_data->sa_rest_x[tet[1]],
-						 mesh_data->sa_rest_x[tet[2]],
-						 mesh_data->sa_rest_x[tet[3]] };
+					const uint	 orig_tid = stress_tet_indices[tid];
+					uint4		 tet = mesh_data->sa_tetrahedrons[orig_tid];
+					const float3 vert_pos[4] = {
+						mesh_data->sa_rest_x[tet[0]],
+						mesh_data->sa_rest_x[tet[1]],
+						mesh_data->sa_rest_x[tet[2]],
+						mesh_data->sa_rest_x[tet[3]]
+					};
 					const float3& x0 = vert_pos[0];
 					const float3& x1 = vert_pos[1];
 					const float3& x2 = vert_pos[2];
@@ -812,19 +838,34 @@ namespace lcs::Initializer
 
 					const float3x3 Dm = luisa::make_float3x3(x1 - x0, x2 - x0, x3 - x0);
 					const float3x3 Dm_inv = luisa::inverse(Dm);
-					const auto&	   mesh_info = world_data[mesh_data->sa_tet_mesh_id[orig_tid]];
-					const auto&	   material = mesh_info.get_material<TetMaterial>();
-					const float	   E = material.youngs_modulus;
-					const float	   nu = material.poisson_ratio;
-					auto [mu, lambda] = StretchEnergy::convert_prop(E, nu);
+					{
+						if (luisa::determinant(Dm) <= 0.0f)
+						{
+							LUISA_ERROR("Tet {} has non-positive volume: {}, rest positions = {}, {}, {}, {}",
+								orig_tid,
+								volume,
+								x0,
+								x1,
+								x2,
+								x3);
+						}
+					}
+					const auto& mesh_info = world_data[mesh_data->sa_tet_mesh_id[orig_tid]];
+					const auto& material = mesh_info.get_material<TetMaterial>();
+					const auto	model = material.model;
+					const float E = material.youngs_modulus;
+					const float nu = material.poisson_ratio;
+					auto [mu, lambda] = FemUtils::convert_lame_params_3d(E, nu);
+					// LUISA_INFO("Tet {}: volume = {},  mu = {}, lambda = {}", orig_tid, volume, mu, lambda);
 					stress_tet_data.constraint_indices[tid] = tet;
+					stress_tet_data.sa_stress_tets_model[tid] = static_cast<uint>(model);
 					stress_tet_data.sa_stress_tets_rest_volume[tid] = volume;
 					stress_tet_data.sa_stress_tets_Dm_inv[tid] = Dm_inv;
 					stress_tet_data.sa_stress_tets_mu_lambda[tid] =
 						luisa::make_float2(mu, lambda);
 				});
 
-			const float default_stiffness_dirichlet = 1e6f;
+			const float default_stiffness_dirichlet = 1e5f;
 
 			// Init soft inertia info
 			auto& soft_inertia_data = sim_data->get_soft_inertia_data();
@@ -837,7 +878,7 @@ namespace lcs::Initializer
 				{
 					const uint orig_vid = soft_vert_indices[vid];
 					const bool is_fixed = mesh_data->sa_is_fixed[orig_vid];
-					soft_inertia_data.constraint_indices[vid] = orig_vid;
+					soft_inertia_data.constraint_indices[vid] = vid;
 					soft_inertia_data.sa_soft_vert_mass[vid] = mesh_data->sa_vert_mass[orig_vid];
 					soft_inertia_data.sa_stiffness_dirichlet[vid] = is_fixed ? default_stiffness_dirichlet : 1.0f;
 				});
@@ -996,15 +1037,15 @@ namespace lcs::Initializer
 					abd_inertia_data.sa_affine_bodies_mass_matrix[body_idx] = compressed_mass_matrix;
 					abd_inertia_data.sa_affine_bodies_mass_matrix_full[body_idx] = body_mass;
 
-					if (num_affine_bodies < 20)
-					{
-						// std::cout << "Mass Matrix = \n" << body_mass << std::endl;
-						LUISA_INFO("Affine Body {} Mass Matrix : ", body_idx);
-						LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[0]);
-						LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[1]);
-						LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[2]);
-						LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[3]);
-					}
+					// if (num_affine_bodies < 20)
+					// {
+					// 	std::cout << "Mass Matrix = \n" << body_mass << std::endl;
+					// 	LUISA_INFO("Affine Body {} Mass Matrix : ", body_idx);
+					// 	LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[0]);
+					// 	LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[1]);
+					// 	LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[2]);
+					// 	LUISA_INFO("Affine Body {} Mass Matrix : {}", body_idx, compressed_mass_matrix[3]);
+					// }
 				}
 
 				const bool has_fixed_vert = sim_data->sa_q_is_fixed[prefix_dof_abd + 4 * body_idx];
@@ -1050,6 +1091,8 @@ namespace lcs::Initializer
 			sim_data->vert_adj_material_force_verts.resize(num_dof);
 
 			auto& adj_map = sim_data->vert_adj_material_force_verts;
+
+			LUISA_INFO("Building adjacent list for material forces...");
 
 			// Vert adj soft-body fixed constraints
 			auto& soft_inertia_data = sim_data->get_soft_inertia_data();
@@ -1406,6 +1449,7 @@ namespace lcs::Initializer
 		{
 			stream
 				<< upload_buffer(device, stress_tet_O.constraint_indices, stress_tet_I.constraint_indices)
+				<< upload_buffer(device, stress_tet_O.sa_stress_tets_model, stress_tet_I.sa_stress_tets_model)
 				<< upload_buffer(device, stress_tet_O.sa_stress_tets_mu_lambda, stress_tet_I.sa_stress_tets_mu_lambda)
 				<< upload_buffer(device, stress_tet_O.sa_stress_tets_rest_volume, stress_tet_I.sa_stress_tets_rest_volume)
 				<< upload_buffer(device, stress_tet_O.sa_stress_tets_Dm_inv, stress_tet_I.sa_stress_tets_Dm_inv)

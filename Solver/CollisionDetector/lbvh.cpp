@@ -294,10 +294,11 @@ namespace lcs
 		luisa::compute::BufferVar<uint>&										  broadphase_count,
 		luisa::compute::BufferVar<uint>&										  broad_phase_list,
 		luisa::compute::Var<uint>												  max_count,
+		luisa::compute::Var<uint>												  vid,
 		std::function<luisa::compute::Var<bool>(const luisa::compute::Var<uint>)> is_valid_function)
 	{
 		using namespace luisa::compute;
-		const Uint							  vid = dispatch_id().x;
+		// const Uint							  vid = dispatch_id().x;
 		constexpr uint						  STACK_SIZE = 32;
 		luisa::compute::ArrayUInt<STACK_SIZE> stack;
 		Int									  stack_ptr = 0;
@@ -373,8 +374,8 @@ namespace lcs
 
 			Var<float3> min_pos = AABB::get_aabb_min(aabb);
 			Var<float3> max_pos = AABB::get_aabb_max(aabb);
-			min_pos = ParallelIntrinsic::block_intrinsic_reduce(vid, min_pos, ParallelIntrinsic::warp_reduce_op_min<float3>);
-			max_pos = ParallelIntrinsic::block_intrinsic_reduce(vid, max_pos, ParallelIntrinsic::warp_reduce_op_max<float3>);
+			min_pos = ParallelIntrinsic::block_intrinsic_reduce(min_pos, ParallelIntrinsic::warp_reduce_op_min<float3>);
+			max_pos = ParallelIntrinsic::block_intrinsic_reduce(max_pos, ParallelIntrinsic::warp_reduce_op_max<float3>);
 			auto reduced_aabb = AABB::make_aabb(min_pos, max_pos);
 
 			$if(vid % 256 == 0)
@@ -403,9 +404,9 @@ namespace lcs
 				Var<float3> min_pos = AABB::get_aabb_min(aabb);
 				Var<float3> max_pos = AABB::get_aabb_max(aabb);
 				min_pos = ParallelIntrinsic::block_intrinsic_reduce(
-					vid, min_pos, ParallelIntrinsic::warp_reduce_op_min<float3>);
+					min_pos, ParallelIntrinsic::warp_reduce_op_min<float3>);
 				max_pos = ParallelIntrinsic::block_intrinsic_reduce(
-					vid, max_pos, ParallelIntrinsic::warp_reduce_op_max<float3>);
+					max_pos, ParallelIntrinsic::warp_reduce_op_max<float3>);
 				auto reduced_aabb = AABB::make_aabb(min_pos, max_pos);
 
 				$if(vid % 256 == 0)
@@ -426,9 +427,9 @@ namespace lcs
 				Var<float3> min_pos = AABB::get_aabb_min(aabb);
 				Var<float3> max_pos = AABB::get_aabb_max(aabb);
 				min_pos = ParallelIntrinsic::block_intrinsic_reduce(
-					vid, min_pos, ParallelIntrinsic::warp_reduce_op_min<float3>);
+					min_pos, ParallelIntrinsic::warp_reduce_op_min<float3>);
 				max_pos = ParallelIntrinsic::block_intrinsic_reduce(
-					vid, max_pos, ParallelIntrinsic::warp_reduce_op_max<float3>);
+					max_pos, ParallelIntrinsic::warp_reduce_op_max<float3>);
 				auto reduced_aabb = AABB::make_aabb(min_pos, max_pos);
 
 				$if(vid % 256 == 0)
@@ -800,6 +801,45 @@ namespace lcs
 					broadphase_count,
 					broad_phase_list,
 					max_count,
+					vid,
+					[&](const Uint adj_fid)
+					{ return Var<bool>(true); });
+			});
+
+		// Active-vert variant: sa_active_vert_indices[dispatch_id().x] gives the global vertex id.
+		compiler.compile<1>(fn_query_from_active_verts_v2,
+			[](BufferVar<CompressedAABB> sa_node_aabb,
+				BufferVar<uint2>		 sa_children,
+				BufferVar<uint>			 sa_object_idx,
+				BufferVar<float3>		 sa_x_begin,
+				BufferVar<float3>		 sa_x_end,
+				BufferVar<uint>			 sa_verts,
+				BufferVar<uint>			 broadphase_count,
+				BufferVar<uint>			 broad_phase_list,
+				BufferVar<uint>			 sa_is_healthy,
+				BufferVar<float>		 d_hat,
+				BufferVar<float>		 thickness,
+				Uint					 max_count)
+			{
+				$if(sa_is_healthy->read(0) == 0u)
+				{
+					device_assert(false, "LBVH is unhealthy during query");
+					$return();
+				};
+
+				// Indirect indexing: use the active vertex list to get the actual global vertex id
+				const Uint active_idx = dispatch_id().x;
+				const Uint vid = sa_verts->read(active_idx);
+				Float2x3   vert_aabb = AABB::make_aabb(sa_x_begin.read(vid), sa_x_end.read(vid));
+				vert_aabb = AABB::add_thickness(vert_aabb, thickness.read(vid) + d_hat.read(vid));
+				query_template2(sa_node_aabb,
+					sa_children,
+					sa_object_idx,
+					vert_aabb,
+					broadphase_count,
+					broad_phase_list,
+					max_count,
+					vid,
 					[&](const Uint adj_fid)
 					{ return Var<bool>(true); });
 			});
@@ -839,6 +879,7 @@ namespace lcs
 					broadphase_count,
 					broad_phase_list,
 					max_count,
+					eid,
 					[&](const Uint adj_eid)
 					{ return Var<bool>(eid < adj_eid); });
 			});
@@ -1161,6 +1202,32 @@ namespace lcs
 			broad_phase_list.size() / 2)
 					  .dispatch(sa_x_begin.size());
 	}
+
+	void LBVH::broad_phase_query_from_verts(Stream& stream,
+		const Buffer<float3>&						sa_x_begin,
+		const Buffer<float3>&						sa_x_end,
+		const Buffer<uint>&							sa_verts,
+		const BufferView<uint>&						broadphase_count,
+		const Buffer<uint>&							broad_phase_list,
+		const Buffer<float>&						d_hat,
+		const Buffer<float>&						thickness)
+	{
+
+		stream << fn_query_from_active_verts_v2(lbvh_data->sa_node_aabb_v2,
+			lbvh_data->sa_children,
+			lbvh_data->sa_object_idx,
+			sa_x_begin,
+			sa_x_end,
+			sa_verts,
+			broadphase_count,
+			broad_phase_list,
+			lbvh_data->sa_is_healthy,
+			d_hat,
+			thickness,
+			broad_phase_list.size() / 2)
+					  .dispatch(sa_verts.size());
+	}
+
 	void LBVH::broad_phase_query_from_edges(Stream& stream,
 		const Buffer<float3>&						sa_x_begin,
 		const Buffer<float3>&						sa_x_end,

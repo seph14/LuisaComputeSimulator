@@ -1,7 +1,6 @@
 #include "world_data.h"
 #include "Core/affine_position.h"
 #include "Core/float_nxn.h"
-#include "Energy/bending_energy.h"
 #include "MeshOperation/mesh_reader.h"
 #include "Initializer/initializer_utils.h"
 #include "Utils/cpu_parallel.h"
@@ -10,6 +9,45 @@
 
 namespace lcs::Initializer // WorldData
 {
+	static std::vector<SimMesh::Int2> extract_all_edges_from_tets(const std::vector<SimMesh::Int4>& tets)
+	{
+		std::vector<SimMesh::Int2> edges;
+		edges.reserve(tets.size() * 6);
+
+		auto push_edge = [&](uint v0, uint v1)
+		{
+			if (v0 > v1)
+				std::swap(v0, v1);
+			edges.push_back({ v0, v1 });
+		};
+
+		for (const auto& tet : tets)
+		{
+			push_edge(tet[0], tet[1]);
+			push_edge(tet[0], tet[2]);
+			push_edge(tet[0], tet[3]);
+			push_edge(tet[1], tet[2]);
+			push_edge(tet[1], tet[3]);
+			push_edge(tet[2], tet[3]);
+		}
+
+		std::sort(edges.begin(),
+			edges.end(),
+			[](const SimMesh::Int2& lhs, const SimMesh::Int2& rhs)
+			{
+				if (lhs[0] != rhs[0])
+					return lhs[0] < rhs[0];
+				return lhs[1] < rhs[1];
+			});
+		edges.erase(std::unique(edges.begin(),
+						edges.end(),
+						[](const SimMesh::Int2& lhs, const SimMesh::Int2& rhs)
+						{ return lhs[0] == rhs[0] && lhs[1] == rhs[1]; }),
+			edges.end());
+
+		return edges;
+	}
+
 	struct AABB
 	{
 		float3 packed_min;
@@ -112,7 +150,12 @@ namespace lcs::Initializer // WorldData
 			fixed_point_default_animations.emplace_back(fixed_info).local_vid = vid;
 		}
 	}
-	WorldData& WorldData::add_fixed_point_info(const MakeFixedPointsInterface& fixed_point_func)
+	WorldData& WorldData::add_fixed_point_from_indices(const std::vector<uint>& indices)
+	{
+		set_pinned_verts_from_indices(indices);
+		return *this;
+	}
+	WorldData& WorldData::add_fixed_point_from_method(const MakeFixedPointsInterface& fixed_point_func)
 	{
 		auto from_norm_position = [&](const std::function<bool(const float3&)>& func,
 									  const FixedPointDefaultAnimation&			info = FixedPointDefaultAnimation())
@@ -318,12 +361,95 @@ namespace lcs::Initializer // WorldData
 			input_mesh.faces[i] = { uint(faces[i][0]), uint(faces[i][1]), uint(faces[i][2]) };
 		}
 		SimMesh::extract_edges_from_surface(input_mesh.faces, input_mesh.edges, input_mesh.dihedral_edges, true);
+		input_mesh.surface_faces = input_mesh.faces;
+		input_mesh.surface_verts.resize(vertices.size());
+		std::iota(input_mesh.surface_verts.begin(), input_mesh.surface_verts.end(), 0);
+		input_mesh.surface_edges = input_mesh.edges;
 		return *this;
 	}
 	WorldData& WorldData::load_mesh_from_path(const std::string_view& path)
 	{
 		bool succ = SimMesh::read_mesh_file(path, input_mesh);
+		input_mesh.surface_edges = input_mesh.edges;
+		input_mesh.surface_faces = input_mesh.faces;
+		input_mesh.surface_verts.resize(input_mesh.model_positions.size());
+		std::iota(input_mesh.surface_verts.begin(), input_mesh.surface_verts.end(), 0);
 		return *this;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Tetrahedral mesh loaders
+	// ---------------------------------------------------------------------------
+
+	WorldData& WorldData::load_tet_mesh_from_array(
+		const std::vector<std::array<float, 3>>& vertices,
+		const std::vector<std::array<uint, 4>>&	 tets)
+	{
+		// 1. Copy vertex positions into input_mesh (same field used for all types)
+		input_mesh.model_positions.resize(vertices.size());
+		for (size_t i = 0; i < vertices.size(); i++)
+			input_mesh.model_positions[i] = { vertices[i][0], vertices[i][1], vertices[i][2] };
+
+		// 2. Copy tetrahedra
+		input_mesh.tetrahedrons.resize(tets.size());
+		for (size_t i = 0; i < tets.size(); i++)
+			input_mesh.tetrahedrons[i] = { tets[i][0], tets[i][1], tets[i][2], tets[i][3] };
+
+		// 3. Extract surface faces, surface verts from tet topology
+		std::vector<uint> inner_tets, outer_tets;
+		SimMesh::extract_surface_face_and_vert_from_tets(
+			input_mesh.model_positions,
+			input_mesh.tetrahedrons,
+			inner_tets,
+			outer_tets,
+			input_mesh.surface_faces,
+			input_mesh.surface_verts);
+
+		// 4. Use surface_faces as the triangle mesh faces (for rendering, collision, etc.)
+		input_mesh.faces = input_mesh.surface_faces;
+
+		// 5. Extract surface edges from surface faces (for collision/rendering adjacency)
+		SimMesh::extract_edges_from_surface(input_mesh.surface_faces, input_mesh.surface_edges, input_mesh.dihedral_edges, true);
+
+		// 6. Extract full tet edges (including interior edges) for spring constraints
+		input_mesh.edges = extract_all_edges_from_tets(input_mesh.tetrahedrons);
+
+		// 7. Mark material type
+		material_type = Material::MaterialType::Tetrahedral;
+
+		// LUISA_INFO("Loaded tet mesh from array: {} verts, {} edges, {} tets => {} surface verts, {} surface faces, {} surface edges",
+		// 	vertices.size(), input_mesh.edges.size(), tets.size(),
+		// 	input_mesh.surface_verts.size(), input_mesh.surface_faces.size(), input_mesh.surface_edges.size());
+
+		return *this;
+	}
+
+	WorldData& WorldData::load_tet_mesh_from_path(const std::string_view& path)
+	{
+		std::vector<SimMesh::Float3> positions;
+		std::vector<SimMesh::Int4>	 raw_tets;
+
+		// Try .t format first, then .vtk
+		bool succ = SimMesh::read_tet_file_t(path, positions, raw_tets);
+		if (!succ)
+			succ = SimMesh::read_tet_file_vtk(path, positions, raw_tets);
+
+		if (!succ)
+		{
+			LUISA_ERROR("Failed to read tetrahedral mesh from path: {}", path);
+			return *this;
+		}
+
+		// Convert to the array format expected by load_tet_mesh_from_array
+		std::vector<std::array<float, 3>> verts(positions.size());
+		for (size_t i = 0; i < positions.size(); i++)
+			verts[i] = { positions[i][0], positions[i][1], positions[i][2] };
+
+		std::vector<std::array<uint, 4>> tets(raw_tets.size());
+		for (size_t i = 0; i < raw_tets.size(); i++)
+			tets[i] = { raw_tets[i][0], raw_tets[i][1], raw_tets[i][2], raw_tets[i][3] };
+
+		return load_tet_mesh_from_array(verts, tets);
 	}
 
 } // namespace lcs::Initializer

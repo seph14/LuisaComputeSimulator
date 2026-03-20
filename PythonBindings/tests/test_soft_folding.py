@@ -15,39 +15,35 @@ solver = lcs.NewtonSolver()
 solver.init_device(backend_name=backend)
 
 # Register meshes
+from utils.mesh_proc import get_sample_tet_grid
+tet_verts, tet_indices = get_sample_tet_grid(origin=(-0.2, 0.3, -0.2), size=(1, 1, 1), resolution=(10, 10, 10))
 
-# Load a mesh by providing vertices and triangles array directly
-cube_mesh_path = os.path.join(root, 'Resources', 'InputMesh', 'cube.obj')
-cube_mesh = trimesh.load(cube_mesh_path, process=False)
-cube = solver.create_world_data_from_array('cube', cube_mesh.vertices, cube_mesh.faces)
-cube.set_simulation_type(lcs.MaterialType.Rigid)
-cube.set_translation(0.0, 0.34, 0.0)
-cube.set_rotation(0.5235988, 0.0, 0.5235988)
-cube.set_scale(0.1)
-cube_id = solver.register_world_data(cube)
-
-# Load a mesh by providing the path to the obj file
-cloth_mesh_path = os.path.join(root, 'Resources', 'InputMesh', 'square2K.obj')
-cloth = solver.create_world_data_from_file_path('cloth', cloth_mesh_path)
-cloth.set_simulation_type(lcs.MaterialType.Cloth)
-cloth.set_physics_material_cloth(thickness=0.001, youngs_modulus=1e6)
-cloth.set_scale(0.75)
-cloth.add_fixed_point_by_method("LeftBack")
-cloth.add_fixed_point_by_method("RightBack")
-cloth.add_fixed_point_by_method("LeftFront")
-cloth.add_fixed_point_by_method("RightFront")
-cloth_id = solver.register_world_data(cloth)
-
+delta = 0.102
+count = 0
+for i in range(5):
+    for j in range(5):
+        for k in range(5):
+            name = f'soft_grid_{i}_{j}_{k}'
+            tet = solver.create_world_data_from_tet_array("tet", tet_verts, tet_indices)
+            tet.set_simulation_type(lcs.MaterialType.Tetrahedral)
+            tet.set_physics_material_tet(
+                model="ARAP",
+                youngs_modulus=1e5,
+                poisson_ratio=0.4,
+            )
+            tet.set_scale(0.1)
+            tet.set_translation(i * delta, 0.1 + j * delta, k * delta)
+            tet_id = solver.register_world_data(tet)
+            count += 1
 # Initialize the solver (builds internal data structures, compiles shaders, etc.)
 solver.init_solver()
 
 # Get mesh info
 solver.print_registered_meshes_info()
-cube_get_1 = solver.get_object_by_registration_id(cube_id)
 
 # Set scene parameters
 config_ref = solver.get_config()
-config_ref.use_floor = False
+config_ref.nonlinear_iter_count = 8
 
 # Output directory (for optional file saving)
 output_dir = os.path.join(root, "Resources", "OutputMesh")

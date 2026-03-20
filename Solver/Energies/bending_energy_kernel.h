@@ -1,10 +1,10 @@
 #pragma once
 
 #include "Energies/energy.h"
+#include "Energies/detail/bending_energy.hpp"
 #include "Energies/energy_offsets.h"
 #include "SimulationCore/base_mesh.h"
 #include "SimulationCore/simulation_data.h"
-#include "Energy/bending_energy.h"
 #include <luisa/dsl/builtin.h>
 
 namespace lcs

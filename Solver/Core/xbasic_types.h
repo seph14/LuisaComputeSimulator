@@ -305,29 +305,29 @@ namespace lcs
 
 		luisa::float3x3 mat[block_M][block_N];
 
-		// NOTE: using row-major
+		// NOTE: using column-major
 		luisa::float3x3& block(size_t idx1, size_t idx2) { return mat[idx1][idx2]; }
-		// NOTE: using row-major
+		// NOTE: using column-major
 		const luisa::float3x3& block(size_t idx1, size_t idx2) const { return mat[idx1][idx2]; }
 
-		// NOTE: using row-major
+		// NOTE: using column-major
 		float& scalar(size_t idx1, size_t idx2)
 		{
 			return mat[(idx1 / 3)][(idx2 / 3)][(idx1 % 3)][(idx2 % 3)];
 		}
-		// NOTE: using row-major
+		// NOTE: using column-major
 		const float& scalar(size_t idx1, size_t idx2) const
 		{
 			return mat[(idx1 / 3)][(idx2 / 3)][(idx1 % 3)][(idx2 % 3)];
 		}
-		// NOTE: using row-major
+		// NOTE: using column-major
 		template <size_t I, size_t J>
 		constexpr float& scalar()
 		{
 			static_assert(I < M && J < N, "Index out of bounds");
 			return mat[block_i<I, J>][block_j<I, J>][inner_i<I, J>][inner_j<I, J>];
 		}
-		// NOTE: using row-major
+		// NOTE: using column-major
 		template <size_t I, size_t J>
 		constexpr const float& scalar() const
 		{
@@ -391,6 +391,16 @@ namespace lcs
 					{
 						(*this).block(i, j) = input;
 					}
+		}
+		void set_as_diag(const luisa::float3x3 input)
+		{
+			static_assert(M == N, "Matrix is not Square Matrix");
+			for (size_t i = 0; i < block_M; i++)
+				for (size_t j = 0; j < block_N; j++)
+					if (i == j)
+						(*this).block(i, j) = input;
+					else
+						(*this).block(i, j) = luisa::make_float3x3(0.0f);
 		}
 		void set_zero()
 		{
@@ -542,6 +552,8 @@ namespace lcs
 	using MATRIX9x6 = LargeMatrix<9, 6>;
 	using MATRIX12x3 = LargeMatrix<12, 3>;
 	using MATRIX3x12 = LargeMatrix<3, 12>;
+	using MATRIX9x12 = LargeMatrix<9, 12>;
+	using MATRIX12x9 = LargeMatrix<12, 9>;
 
 	// #define MAKE_XMATRIX_TYPE(M, N) \
 //     struct float##M##x##N { \
@@ -978,6 +990,8 @@ LUISA_STRUCT(lcs::MATRIX12x3, mat){ DEFINE_LARGE_MATRIX_OPERATIONS(12, 3) };
 LUISA_STRUCT(lcs::MATRIX3x12, mat){ DEFINE_LARGE_MATRIX_OPERATIONS(3, 12) };
 LUISA_STRUCT(lcs::MATRIX6x9, mat){ DEFINE_LARGE_MATRIX_OPERATIONS(6, 9) };
 LUISA_STRUCT(lcs::MATRIX9x6, mat){ DEFINE_LARGE_MATRIX_OPERATIONS(9, 6) };
+LUISA_STRUCT(lcs::MATRIX9x12, mat){ DEFINE_LARGE_MATRIX_OPERATIONS(9, 12) };
+LUISA_STRUCT(lcs::MATRIX12x9, mat){ DEFINE_LARGE_MATRIX_OPERATIONS(12, 9) };
 
 #undef DEFINE_XMATRIX_OPERATIONS
 #undef DEFINE_XMATRIX_CONVERT

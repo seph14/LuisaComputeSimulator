@@ -6,12 +6,28 @@
 namespace lcs
 {
 
-#define Identity2x2 luisa::float2x2::eye(1.0f)
-#define Identity3x3 luisa::float3x3::eye(1.0f)
-#define Identity4x4 luisa::float4x4::eye(1.0f)
+	// #define Identity2x2 luisa::float2x2::eye(1.0f)
+	// #define identity3x3 luisa::float3x3::eye(1.0f)
+	// #define identity4x4 luisa::float4x4::eye(1.0f)
+	// #define zero3x3 luisa::make_float3x3(0.0f)
+	// #define Zero4x4 luisa::make_float4x4(0.0f)
 
-#define Zero3x3 luisa::make_float3x3(0.0f)
-#define Zero4x4 luisa::make_float4x4(0.0f)
+	constexpr float2x2 identity2x2 = luisa::float2x2::eye(1.0f);
+	constexpr float3x3 identity3x3 = luisa::float3x3::eye(1.0f);
+	constexpr float4x4 identity4x4 = luisa::float4x4::eye(1.0f);
+	constexpr float3x3 zero3x3 = luisa::make_float3x3(0.0f);
+	constexpr float4x4 zero4x4 = luisa::make_float4x4(0.0f);
+
+	template <size_t M, size_t N, typename Value>
+	static inline void set_matrix_scalar(LargeMatrix<M, N>& mat, uint col_idx, uint row_idx, const Value& value)
+	{
+		mat.scalar(col_idx, row_idx) = value;
+	}
+	template <size_t M, size_t N, typename Value>
+	static inline void set_matrix_scalar(Var<LargeMatrix<M, N>>& mat, uint col_idx, uint row_idx, const Value& value)
+	{
+		mat->scalar(col_idx, row_idx) = value;
+	}
 
 	// makeFloat NxN
 	// diag scalar
@@ -568,6 +584,15 @@ namespace lcs
 		return makeFloat3x3(luisa::compute::make_float3(0.0f, vec.z, -vec.y), // Since we use column-major
 			luisa::compute::make_float3(-vec.z, 0.0f, vec.x),
 			luisa::compute::make_float3(vec.y, -vec.x, 0.0f));
+	}
+
+	[[nodiscard]] inline float sqr_frobenius(const float3x3& m)
+	{
+		return dot(m[0], m[0]) + dot(m[1], m[1]) + dot(m[2], m[2]);
+	}
+	[[nodiscard]] inline Var<float> sqr_frobenius(const Var<float3x3>& m)
+	{
+		return dot(m[0], m[0]) + dot(m[1], m[1]) + dot(m[2], m[2]);
 	}
 
 }; // namespace lcs

@@ -348,6 +348,7 @@ namespace lcs
 		struct StressTet : ConstitutionInterface<BufferType, StressTet<BufferType>>
 		{
 			BufferType<uint4>	 constraint_indices;
+			BufferType<uint>	 sa_stress_tets_model;
 			BufferType<float>	 sa_stress_tets_rest_volume;
 			BufferType<float2>	 sa_stress_tets_mu_lambda;
 			BufferType<float3x3> sa_stress_tets_Dm_inv;
@@ -496,8 +497,8 @@ namespace lcs
 		// BufferType<float3> sa_affine_bodies_gravity;
 
 		BufferType<uint>  sa_contact_active_verts;
-		BufferType<uint>  sa_contact_active_edges;
-		BufferType<uint>  sa_contact_active_faces;
+		BufferType<uint2> sa_contact_active_edges;
+		BufferType<uint3> sa_contact_active_faces;
 		BufferType<float> sa_contact_active_verts_d_hat;
 		BufferType<float> sa_contact_active_verts_offset;
 		BufferType<float> sa_contact_active_verts_friction_coeff;
@@ -600,6 +601,7 @@ LUISA_BINDING_GROUP(lcs::Constitutions::StressTet<luisa::compute::Buffer>,
 	constraint_hessians,
 	vert_adj_constraints_csr,
 	constraint_indices,
+	sa_stress_tets_model,
 	sa_stress_tets_rest_volume,
 	sa_stress_tets_mu_lambda,
 	sa_stress_tets_Dm_inv){};

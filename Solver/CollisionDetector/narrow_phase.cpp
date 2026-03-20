@@ -2,8 +2,6 @@
 #include "CollisionDetector/accd.hpp"
 #include "CollisionDetector/cipc_kernel.hpp"
 #include "CollisionDetector/friction_kernel.hpp"
-#include "CollisionDetector/libuipc/codim_ipc_simplex_normal_contact_function.h"
-#include "CollisionDetector/libuipc/distance/distance_flagged.h"
 #include "Core/lc_to_eigen.h"
 #include "Core/affine_position.h"
 #include "SimulationCore/scene_params.h"
@@ -363,7 +361,7 @@ namespace lcs // CCD
 		const uint offset_vf = collision_data->get_vf_count_offset();
 		const uint offset_ee = collision_data->get_ee_count_offset();
 
-		luisa::compute::ShaderOption option{ .enable_debug_info = true };
+		luisa::compute::ShaderOption option = compiler.default_option();
 
 		compiler.compile(
 			fn_reset_vertex_property, [](BufferVar<VertexProperty> sa_x_property)
@@ -507,7 +505,7 @@ namespace lcs // CCD
 					//            t1_f2);
 				};
 
-				toi = ParallelIntrinsic::block_intrinsic_reduce(pair_idx, toi, ParallelIntrinsic::warp_reduce_op_min<float>);
+				toi = ParallelIntrinsic::block_intrinsic_reduce(toi, ParallelIntrinsic::warp_reduce_op_min<float>);
 
 				$if(pair_idx % 256 == 0 & toi != accd::line_search_max_t)
 				{
@@ -653,7 +651,7 @@ namespace lcs // CCD
 				//     device_log("EE Pair {} : toi = {}, edge1 {} ({}) & edge2 {} ({})", pair_idx, toi, left, left_edge, right, right_edge);
 				// };
 
-				toi = ParallelIntrinsic::block_intrinsic_reduce(pair_idx, toi, ParallelIntrinsic::warp_reduce_op_min<float>);
+				toi = ParallelIntrinsic::block_intrinsic_reduce(toi, ParallelIntrinsic::warp_reduce_op_min<float>);
 
 				$if(pair_idx % 256 == 0 & toi != accd::line_search_max_t)
 				{
@@ -813,7 +811,7 @@ namespace lcs // DCD
 		const uint offset_vf = collision_data->get_vf_count_offset();
 		const uint offset_ee = collision_data->get_ee_count_offset();
 
-		luisa::compute::ShaderOption option{ .enable_fast_math = true, .enable_debug_info = true };
+		luisa::compute::ShaderOption option = compiler.default_option();
 
 		compiler.compile<1>(
 			fn_narrow_phase_vf_dcd_query,
@@ -1265,7 +1263,7 @@ namespace lcs // Friction
 	{
 		using namespace luisa::compute;
 
-		luisa::compute::ShaderOption option{ .enable_fast_math = true, .enable_debug_info = true };
+		luisa::compute::ShaderOption option = compiler.default_option();
 
 		// Only process friction part
 		compiler.compile<1>(
@@ -1344,7 +1342,7 @@ namespace lcs // Scan Collision Set
 	void NarrowPhasesDetector::compile_construct_pervert_adj_collision_list(AsyncCompiler& compiler)
 	{
 		using namespace luisa::compute;
-		luisa::compute::ShaderOption option{ .enable_fast_math = true, .enable_debug_info = true };
+		luisa::compute::ShaderOption option = compiler.default_option();
 
 		compiler.compile<1>(
 			fn_calc_pervert_collion_count,
@@ -1386,7 +1384,7 @@ namespace lcs // Scan Collision Set
 
 				Uint						 vert_count = num_adj_pairs;
 				Uint						 block_sum = 0;
-				Uint						 block_offset = ParallelIntrinsic::block_intrinsic_scan_exclusive<uint>(vid, vert_count, block_sum);
+				Uint						 block_offset = ParallelIntrinsic::block_intrinsic_scan_exclusive<uint>(vert_count, block_sum);
 				luisa::compute::Shared<uint> block_prefix(1);
 				$if(vid % 256 == 0)
 				{
@@ -1497,7 +1495,7 @@ namespace lcs // Culling and Make Triplet
 	{
 		using namespace luisa::compute;
 
-		luisa::compute::ShaderOption option{ .enable_fast_math = true, .enable_debug_info = true };
+		luisa::compute::ShaderOption option = compiler.default_option();
 
 		compiler.compile<1>(
 			fn_reset_triplet,
@@ -1552,7 +1550,7 @@ namespace lcs // Culling and Make Triplet
 				luisa::compute::sync_block();
 
 				// Block sort
-				ParallelIntrinsic::block_bitonic_sort(cache_key, cache_value, triplet_idx, value);
+				ParallelIntrinsic::block_bitonic_sort(cache_key, cache_value, value);
 
 				// For sorted triplet
 				$if(triplet_idx < num_triplets)
@@ -1567,7 +1565,7 @@ namespace lcs // Culling and Make Triplet
 
 					Uint	   block_sum = 0;
 					const Uint prefix_ex =
-						ParallelIntrinsic::block_intrinsic_scan_exclusive(triplet_idx, contr, block_sum);
+						ParallelIntrinsic::block_intrinsic_scan_exclusive(contr, block_sum);
 					const Uint prefix_in = prefix_ex + contr;
 
 					$if(contr == 1)
@@ -1604,7 +1602,7 @@ namespace lcs // Culling and Make Triplet
 
 				Uint						 vert_count = num_adj_verts;
 				Uint						 block_sum = 0;
-				Uint						 block_offset = ParallelIntrinsic::block_intrinsic_scan_exclusive<uint>(vid, vert_count, block_sum);
+				Uint						 block_offset = ParallelIntrinsic::block_intrinsic_scan_exclusive<uint>(vert_count, block_sum);
 				luisa::compute::Shared<uint> block_prefix(1);
 				$if(vid % 256 == 0)
 				{
@@ -2428,7 +2426,7 @@ namespace lcs // Compute Contact Gradient & Hessian & Assemble
 			sa_cgA_diag.atomic(idx)[2][2].fetch_add(mat[2][2]);
 		};
 
-		luisa::compute::ShaderOption option{ .enable_fast_math = true, .enable_debug_info = true };
+		luisa::compute::ShaderOption option = compiler.default_option();
 
 		// Spring-form contact energy
 		compiler.compile<1>(
@@ -2978,7 +2976,7 @@ namespace lcs // Compute Contact Energy
 				};
 
 				Float2 energy =
-					ParallelIntrinsic::block_intrinsic_reduce(pair_idx,
+					ParallelIntrinsic::block_intrinsic_reduce(
 						make_float2(energy_repulsion, energy_friction),
 						ParallelIntrinsic::warp_reduce_op_sum<float2>);
 
@@ -3397,7 +3395,7 @@ namespace lcs // Host Methods
 					};
 
 					toi = ParallelIntrinsic::block_intrinsic_reduce(
-						pair_idx, toi, ParallelIntrinsic::warp_reduce_op_min<float>);
+						toi, ParallelIntrinsic::warp_reduce_op_min<float>);
 				});
 
 			stream << fn_test_ccd_ee(thickenss).dispatch(1) << synchronize();

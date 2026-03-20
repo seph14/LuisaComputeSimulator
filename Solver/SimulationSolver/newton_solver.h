@@ -42,6 +42,8 @@ namespace lcs
 			luisa::compute::Clock clk;
 			{
 				AsyncCompiler compiler(device);
+				compiler.default_option().enable_debug_info = false;
+				compiler.default_option().enable_fast_math = true;
 				{
 					SolverInterface::compile(compiler);
 					this->compile(compiler);
@@ -94,6 +96,7 @@ namespace lcs
 		void device_narrowphase_ccd(luisa::compute::Stream& stream);
 		void device_narrowphase_dcd(luisa::compute::Stream& stream);
 		void device_update_contact_list(luisa::compute::Device& device, luisa::compute::Stream& stream);
+		void device_triplet_sort(luisa::compute::Device& device, luisa::compute::Stream& stream);
 		void device_post_dist_check(luisa::compute::Stream& stream);
 		void device_ccd_line_search(luisa::compute::Device& device, luisa::compute::Stream& stream);
 		void device_SpMV(luisa::compute::Stream&  stream,
@@ -134,6 +137,7 @@ namespace lcs
 		luisa::compute::Shader<1, Constitutions::StretchSpring<luisa::compute::Buffer>>			 fn_material_energy_assembly_stretch_spring;
 		luisa::compute::Shader<1, Constitutions::StretchFace<luisa::compute::Buffer>>			 fn_material_energy_assembly_stretch_face;
 		luisa::compute::Shader<1, Constitutions::BendingEdge<luisa::compute::Buffer>>			 fn_material_energy_assembly_bending;
+		luisa::compute::Shader<1, Constitutions::StressTet<luisa::compute::Buffer>>				 fn_material_energy_assembly_stress_tet;
 		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>>			 fn_material_energy_assembly_soft_inertia;
 		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, uint>		 fn_material_energy_assembly_abd_inertia;
 		luisa::compute::Shader<1, Constitutions::AbdOrthogonality<luisa::compute::Buffer>, uint> fn_material_energy_assembly_abd_ortho;

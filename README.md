@@ -325,7 +325,8 @@ This project is licensed under the **MIT License**. See [LICENSE](LICENSE) for d
 
 ## 🙏 Acknowledgments
 
-Thanks to the [LuisaCompute](https://github.com/LuisaGroup/LuisaCompute) and [libuipc](https://github.com/spiriMirror/libuipc) communities for their open-source contributions to physically-based simulation.
+Thanks to LuisaCompute and Libuipc community, their open-source spirit has propelled the advancement of the reality.
+
 
 ---
 

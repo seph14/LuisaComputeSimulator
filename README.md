@@ -17,16 +17,16 @@ LuisaComputeSimulator is a **high-performance cross-platform physics simulator**
 
 ## ✨ Features
 
-| Feature                            | Description                                                                           |
-| ---------------------------------- | ------------------------------------------------------------------------------------- |
+| Feature                            | Description                                                                       |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
 | **Soft Body / Cloth Simulation**   | High-resolution soft-body and cloth simulation with FEM-based constitutive models |
-| **Rigid Body Dynamics**            | Rigid body simulation with collision and friction                                     |
-| **Soft-Cloth-Rigid Coupling**      | Seamless interaction among soft bodies, cloth, and rigid bodies in one solver        |
-| **Penetration-Free Contact (IPC)** | Robust collision handling using barrier functions                                     |
-| **Affine Body Dynamics (ABD)**     | Efficient reduced-space simulation for rigid bodies                                   |
-| **Multi-Backend Support**          | CUDA, DirectX 12, Vulkan, Metal, CPU (Fallback)                                       |
-| **Python & C++ APIs**              | Flexible programming interfaces for different use cases                               |
-| **Interactive GUI**                | Real-time visualization with Polyscope                                                |
+| **Rigid Body Dynamics**            | Rigid body simulation with collision and friction                                 |
+| **Soft-Cloth-Rigid Coupling**      | Seamless interaction among soft bodies, cloth, and rigid bodies in one solver     |
+| **Penetration-Free Contact (IPC)** | Robust collision handling using barrier functions                                 |
+| **Affine Body Dynamics (ABD)**     | Efficient reduced-space simulation for rigid bodies                               |
+| **Multi-Backend Support**          | CUDA, DirectX 12, Vulkan, Metal, CPU (Fallback)                                   |
+| **Python & C++ APIs**              | Flexible programming interfaces for different use cases                           |
+| **Interactive GUI**                | Real-time visualization with Polyscope                                            |
 
 ### Supported Physics
 
@@ -206,6 +206,8 @@ Sample Cpp-frontend code can be found at [app_integration.cpp](Application/app_i
 
 ### 1. Clone & Build
 
+You can use Cmake:
+
 ```bash
 # Clone the repository
 git clone https://github.com/ChengzhuUwU/LuisaComputeSimulator.git
@@ -214,9 +216,15 @@ cd LuisaComputeSimulator
 # Configure and build (CMake)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
+```
 
-# Or use Xmake
+You can also use Xmake:
+
+```bash
+# Clone dependencies
 xmake lua setup.lua
+# Configure (platform-specific)
+xmake f -m release 
 xmake build
 ```
 
@@ -225,10 +233,10 @@ xmake build
 #### C++ Application
 ```bash
 # Run with default scene
-./build/bin/app-simulation
+./build/bin/app_simulation
 
 # Specify backend and scene
-./build/bin/app-simulation cuda Resources/Scenes/cloth_rigid_coupling_high_res.json
+./build/bin/app_simulation cuda Resources/Scenes/cloth_rigid_coupling_high_res.json
 ```
 
 #### Python Application

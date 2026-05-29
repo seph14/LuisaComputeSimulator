@@ -2,14 +2,18 @@ set(FETCHCONTENT_QUIET OFF)
 set(FETCHCONTENT_VERBOSE ON)
 include(FetchContent)
 
+#
+# LuisaCompute
+#
 if (NOT TARGET luisa::compute)
     FetchContent_Declare(
         luisa_compute
         GIT_REPOSITORY https://github.com/LuisaGroup/LuisaCompute.git # https://gitee.com/celeste-huohuo/LuisaCompute.git
-        GIT_TAG 0e641eb8667c3d3ce0e3c9ecb709de9f22363d4e
+        GIT_TAG 8fda2e0268c09bc3051cde913a612836036397d9
         # GIT_TAG next
         # GIT_SUBMODULES ""
         SOURCE_DIR ${CMAKE_SOURCE_DIR}/ext/luisaCompute
+        GIT_SHALLOW TRUE
     )
     FetchContent_Populate(luisa_compute)
     set(LuisaCompute_SOURCE_DIR ${luisa_compute_SOURCE_DIR})
@@ -18,16 +22,57 @@ if (NOT TARGET luisa::compute)
 
     set(LUISA_COMPUTE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(LUISA_COMPUTE_DOWNLOAD_NVCOMP OFF CACHE BOOL "" FORCE)
+    # Use the system STL on every path (plain cmake build, scikit-build wheel,
+    # editable install). The previous SKBUILD-only override forced embedded STL
+    # for `pip install -e .`, which produced a Metal backend that loaded but
+    # failed device probing on macOS. Keeping a single setting means dev and
+    # wheel builds share the same ABI as the C++ application.
     set(LUISA_COMPUTE_USE_SYSTEM_STL ON CACHE BOOL "" FORCE)
     set(LUISA_COMPUTE_ENABLE_RUST OFF CACHE BOOL "" FORCE)
     set(LUISA_COMPUTE_ENABLE_REMOTE OFF CACHE BOOL "" FORCE)
     set(LUISA_COMPUTE_ENABLE_GUI OFF CACHE BOOL "" FORCE)
     set(LUISA_COMPUTE_ENABLE_WAYLAND ON CACHE BOOL "" FORCE)
     set(LUISA_COMPUTE_ENABLE_CPU OFF CACHE BOOL "" FORCE)
-    add_subdirectory(${LuisaCompute_SOURCE_DIR})
+    if (LCS_BUILD_PYBINDINGS)
+        # scikit-build-core defines SKBUILD for the top-level project, but the
+        # embedded LuisaCompute project also treats SKBUILD as a request to build
+        # and install its own Python package. We only need LuisaCompute as a C++
+        # dependency for lcs_py here, so hide SKBUILD while adding that subproject.
+        set(_LCS_SAVED_SKBUILD ${SKBUILD})
+        set(SKBUILD OFF)
+        add_subdirectory(${LuisaCompute_SOURCE_DIR})
+        set(SKBUILD ${_LCS_SAVED_SKBUILD})
+        unset(_LCS_SAVED_SKBUILD)
+    else()
+        add_subdirectory(${LuisaCompute_SOURCE_DIR})
+    endif()
 endif ()
 target_link_libraries(luisa-compute-solver-lib PUBLIC luisa::compute) #  ipc::toolkit
 
+message(STATUS "Use LUISA_COMPUTE_ENABLE_EXPERIMENTAL_CUDA_LLVM_CODEGEN : ${LUISA_COMPUTE_ENABLE_EXPERIMENTAL_CUDA_LLVM_CODEGEN} ")
+
+#
+# lcpp
+#
+if (NOT TARGET lcpp)
+    FetchContent_Declare(
+        lcpp
+        GIT_REPOSITORY https://github.com/Ligo04/lc_parallel_primitive.git
+        GIT_TAG 346650626098ba236297df152d2974f2c0618f44
+        SOURCE_DIR ${CMAKE_SOURCE_DIR}/ext/lcpp
+    )
+    set(LCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Populate(lcpp)
+    add_subdirectory(${EXT_PATH}/lcpp)
+endif ()
+target_link_libraries(luisa-compute-solver-lib PUBLIC lcpp)
+
+message(STATUS "Use LUISA_COMPUTE_ENABLE_EXPERIMENTAL_CUDA_LLVM_CODEGEN : ${LUISA_COMPUTE_ENABLE_EXPERIMENTAL_CUDA_LLVM_CODEGEN} ")
+
+
+#
+# Eigen3
+#
 find_package(Eigen3 QUIET)
 if (NOT TARGET Eigen3::Eigen)
     message(STATUS "Can not find eigen3 package, download...")
@@ -36,6 +81,7 @@ if (NOT TARGET Eigen3::Eigen)
         GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
         GIT_TAG 3.4.0
         SOURCE_DIR ${EXT_PATH}/eigen
+        GIT_SHALLOW TRUE
     )
     set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
     set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -51,7 +97,9 @@ else()
 endif()
 target_link_libraries(luisa-compute-solver-lib PUBLIC Eigen3::Eigen)
 
-
+#
+# Polyscope
+#
 if(LCS_ENABLE_GUI)
     if (NOT TARGET polyscope)
         FetchContent_Declare(
@@ -60,6 +108,7 @@ if(LCS_ENABLE_GUI)
             # https://gitee.com/celeste-huohuo/polyscope.git
             GIT_REPOSITORY https://gitee.com/celeste-huohuo/polyscope.git
             SOURCE_DIR ${EXT_PATH}/polyscope
+            GIT_SHALLOW TRUE
         )
         set(POLYSCOPE_USE_EXTERNAL_GLFW ON CACHE BOOL "" FORCE)
         set(POLYSCOPE_BACKEND_OPENGL3_GLFW ON CACHE BOOL "" FORCE)
@@ -70,8 +119,16 @@ if(LCS_ENABLE_GUI)
 endif()
 
 
+#
+# TBB or libdispatch
+#
+
 if (LCS_BUILD_PYBINDINGS)
 
+    set(PYBIND11_FINDPYTHON ON CACHE BOOL "Force pybind11 to use modern FindPython" FORCE)
+    set(Python_EXECUTABLE ${LCS_PYTHON_EXECUTABLE} CACHE FILEPATH "Python executable" FORCE)
+    set(Python3_EXECUTABLE ${LCS_PYTHON_EXECUTABLE} CACHE FILEPATH "Python3 executable" FORCE)
+    set(PYTHON_EXECUTABLE ${LCS_PYTHON_EXECUTABLE} CACHE FILEPATH "Legacy Python executable" FORCE)
     set(PYBIND11_PYTHON_EXECUTABLE ${LCS_PYTHON_EXECUTABLE} CACHE FILEPATH "Python executable for pybind11" FORCE)
     message(STATUS "Python binding executable path: ${PYBIND11_PYTHON_EXECUTABLE}")
 
@@ -91,6 +148,9 @@ if (LCS_BUILD_PYBINDINGS)
     # endif()
 endif()
 
+#
+# TBB or libdispatch
+#
 if (LCS_USE_SYSTEM_PARALLEL_FOR)
     target_compile_definitions(luisa-compute-solver-lib PRIVATE LCS_USE_SYSTEM_PARALLEL_FOR=1)
     find_package(TBB CONFIG QUIET)
@@ -145,8 +205,9 @@ endif()
 # endif()
 
 
-
-# # yyjson
+#
+# yyjson
+#
 if (NOT TARGET yyjson)
     find_package(yyjson QUIET)
     if (yyjson_FOUND)

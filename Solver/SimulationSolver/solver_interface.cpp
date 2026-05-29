@@ -3,6 +3,7 @@
 #include "CollisionDetector/friction_kernel.hpp"
 #include <stdexcept>
 #include "Core/affine_position.h"
+#include "Core/svd_3x3.h"
 #include "Core/scalar.h"
 #include "Energies/abd_inertia_energy.h"
 #include "Energies/abd_ortho_energy.h"
@@ -22,6 +23,8 @@
 #include "luisa/dsl/builtin.h"
 #include "luisa/runtime/buffer.h"
 #include "luisa/runtime/stream.h"
+#include <Eigen/Geometry>
+#include <cmath>
 #include <numeric>
 
 namespace lcs
@@ -64,7 +67,13 @@ namespace lcs
 		}
 
 		{
-			lcs::Initializer::init_sim_data(world_data, host_mesh_data, host_sim_data);
+			lcs::Initializer::init_sim_data(
+				world_data,
+				host_mesh_data,
+				host_sim_data,
+				fixed_joint_descs,
+				prismatic_joint_descs,
+				revolute_joint_descs);
 			lcs::Initializer::upload_sim_buffers(device, stream, host_sim_data, sim_data);
 			lcs::Initializer::resize_pcg_data(device, stream, host_mesh_data, host_sim_data, sim_data);
 		}
@@ -262,6 +271,7 @@ namespace lcs
 			}
 		}
 	}
+
 	void SolverInterface::compile(AsyncCompiler& compiler)
 	{
 		compile_compute_energy(compiler);
@@ -623,6 +633,141 @@ namespace lcs
 			output_triangles);
 	}
 
+	static void fn_extract_rigid_body_translation_affine(const lcs::MeshData<std::vector>* host_mesh_data,
+		const lcs::SimulationData<std::vector>*											   host_sim_data,
+		const uint																		   sorted_idx,
+		float3&																			   out_translation,
+		float3x3&																		   out_affine)
+	{
+
+		const uint first_vid = host_mesh_data->prefix_num_verts[sorted_idx];
+		if (first_vid >= host_sim_data->sa_x_to_dof_map.size())
+		{
+			LUISA_ERROR("Invalid rigid body prefix vertex {} for sorted index {}.", first_vid, sorted_idx);
+		}
+
+		const auto dof_info = host_sim_data->sa_x_to_dof_map[first_vid];
+		if (!dof_info.is_rigid_body())
+		{
+			LUISA_ERROR("Sorted index {} is not mapped to a rigid body DOF.", sorted_idx);
+		}
+
+		const uint dof_start = dof_info.get_dof_idx();
+		out_translation = host_sim_data->sa_q_outer[dof_start + 0u];
+		out_affine[0] = host_sim_data->sa_q_outer[dof_start + 1u];
+		out_affine[1] = host_sim_data->sa_q_outer[dof_start + 2u];
+		out_affine[2] = host_sim_data->sa_q_outer[dof_start + 3u];
+	}
+
+	static void fn_extract_rotation_scaling_from_affine(const float3x3& affine,
+		Eigen::Matrix3f&												out_rotation,
+		Eigen::Matrix3f&												out_stretch)
+	{
+		const Eigen::Matrix3f			  A = float3x3_to_eigen3x3(affine);
+		Eigen::JacobiSVD<Eigen::Matrix3f> svd(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
+		Eigen::Matrix3f					  U = svd.matrixU();
+		const Eigen::Matrix3f			  V = svd.matrixV();
+
+		out_rotation = U * V.transpose();
+		if (out_rotation.determinant() < 0.0f)
+		{
+			const Eigen::Vector3f sigma = svd.singularValues();
+			int					  min_sigma_idx = 0;
+			sigma.minCoeff(&min_sigma_idx);
+			U.col(min_sigma_idx) *= -1.0f;
+			out_rotation = U * V.transpose();
+		}
+
+		out_stretch = out_rotation.transpose() * A;
+		out_stretch = 0.5f * (out_stretch + out_stretch.transpose());
+	}
+
+	std::array<float, 3> SolverInterface::get_rigid_body_translation(uint registration_id)
+	{
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+		if (!world_data[sorted_idx].holds<Material::RigidMaterial>())
+		{
+			LUISA_ERROR("Registration id {} is not a rigid body.", registration_id);
+		}
+
+		float3	 t_luisa;
+		float3x3 A;
+		fn_extract_rigid_body_translation_affine(host_mesh_data, host_sim_data, sorted_idx, t_luisa, A);
+
+		return { t_luisa.x, t_luisa.y, t_luisa.z };
+	}
+	std::array<float, 3> SolverInterface::get_rigid_body_scaling(uint registration_id)
+	{
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+		if (!world_data[sorted_idx].holds<Material::RigidMaterial>())
+		{
+			LUISA_ERROR("Registration id {} is not a rigid body.", registration_id);
+		}
+
+		float3	 t_luisa;
+		float3x3 A;
+		fn_extract_rigid_body_translation_affine(host_mesh_data, host_sim_data, sorted_idx, t_luisa, A);
+
+		Eigen::Matrix3f rotation;
+		Eigen::Matrix3f stretch;
+		fn_extract_rotation_scaling_from_affine(A, rotation, stretch);
+
+		return { stretch(0, 0), stretch(1, 1), stretch(2, 2) };
+	}
+
+	std::array<float, 4> SolverInterface::get_rigid_body_rotation_quaternion(uint registration_id)
+	{
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+		if (!world_data[sorted_idx].holds<Material::RigidMaterial>())
+		{
+			LUISA_ERROR("Registration id {} is not a rigid body.", registration_id);
+		}
+
+		float3	 t_luisa;
+		float3x3 A;
+		fn_extract_rigid_body_translation_affine(host_mesh_data, host_sim_data, sorted_idx, t_luisa, A);
+
+		Eigen::Matrix3f rotation;
+		Eigen::Matrix3f stretch;
+		fn_extract_rotation_scaling_from_affine(A, rotation, stretch);
+
+		Eigen::Quaternionf quat(rotation);
+		quat.normalize();
+		if (quat.w() < 0.0f)
+		{
+			quat.coeffs() *= -1.0f;
+		}
+		return { quat.x(), quat.y(), quat.z(), quat.w() };
+	}
+
+	std::array<float, 3> SolverInterface::get_rigid_body_rotation_axis_angle(uint registration_id)
+	{
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+		if (!world_data[sorted_idx].holds<Material::RigidMaterial>())
+		{
+			LUISA_ERROR("Registration id {} is not a rigid body.", registration_id);
+		}
+
+		float3	 t_luisa;
+		float3x3 A;
+		fn_extract_rigid_body_translation_affine(host_mesh_data, host_sim_data, sorted_idx, t_luisa, A);
+
+		Eigen::Matrix3f rotation;
+		Eigen::Matrix3f stretch;
+		fn_extract_rotation_scaling_from_affine(A, rotation, stretch);
+
+		Eigen::AngleAxisf axis_angle(rotation);
+		float			  angle = axis_angle.angle();
+		Eigen::Vector3f	  axis = axis_angle.axis();
+		if (!std::isfinite(angle) || angle < 1.0e-8f)
+		{
+			return { 0.0f, 0.0f, 0.0f };
+		}
+
+		const Eigen::Vector3f rot_vec = axis * angle;
+		return { rot_vec.x(), rot_vec.y(), rot_vec.z() };
+	}
+
 	void SolverInterface::load_saved_state_from_host(const std::string_view& full_path)
 	{
 		std::ifstream file(std::string(full_path), std::ios::in);
@@ -839,6 +984,9 @@ namespace lcs
 
 		abd_ortho_energy = std::make_unique<AbdOrthoEnergy>(sim_data->sa_system_energy.view(), sim_data->sa_q.view());
 		abd_ortho_energy->compile(compiler);
+
+		joint_constraint_energy = std::make_unique<JointConstraintEnergy>(sim_data->sa_system_energy.view(), sim_data->sa_q.view());
+		joint_constraint_energy->compile(compiler);
 	}
 	void SolverInterface::device_compute_elastic_energy(luisa::compute::Stream& stream,
 		std::map<std::string, double>&											energy_list)
@@ -866,6 +1014,12 @@ namespace lcs
 		if (abd_ortho_data.is_valid())
 		{
 			abd_ortho_energy->device_compute_energy(stream, abd_ortho_data, curr_q, abd_ortho_data.get_num_indices());
+		}
+
+		const auto& joint_data = sim_data->get_joint_constraint_data();
+		if (joint_data.is_valid())
+		{
+			joint_constraint_energy->device_compute_energy(stream, joint_data, joint_data.get_num_indices());
 		}
 
 		if (get_scene_params().use_floor)
@@ -922,6 +1076,7 @@ namespace lcs
 		energy_list.insert(std::make_pair("Cloth Bending", host_energy[offset_bending]));
 		energy_list.insert(std::make_pair("ABD Orthogonality", host_energy[offset_abd_ortho]));
 		energy_list.insert(std::make_pair("Tet Elastic", host_energy[offset_tet_elastic]));
+		energy_list.insert(std::make_pair("Joint Constraint", host_energy[offset_joint_constraint]));
 	};
 
 	// ---------------------------------------------------------------------------

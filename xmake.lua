@@ -1,5 +1,5 @@
 set_allowedplats("windows", "macosx", "linux")
-set_allowedarchs("x64", "arm64")
+set_allowedarchs("x64", "arm64", "x86_64")
 set_allowedmodes("debug", "release", "releasedbg")
 set_targetdir(path.join(os.projectdir(), "build", "bin"))
 
@@ -132,7 +132,7 @@ target("luisa-compute-solver-lib")
     add_files("Solver/**.cpp", "Solver/**.cc")
     add_includedirs("Solver", {public = true})
     add_defines(format([[LCSV_RESOURCE_PATH="%s"]], path.unix(path.join(os.scriptdir(), "Resources"))), {public = true})
-    add_deps("lc-dsl", "lc-runtime", "lc-backends-dummy", "lc-vstl", "eigen")
+    add_deps("lc-dsl", "lc-runtime", "lc-backends-dummy", "lc-vstl", "eigen", "lcpp")
     set_pcxxheader("Solver/zzpch.h")
 
 target("app_simulation")
@@ -192,6 +192,50 @@ if cfg_bool(false, "lcs_enable_test") then
         add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
         add_files("UnitTest/test_gradient_hessian.cpp")
         add_deps("luisa-compute-solver-lib")
+
+    target("test_newton_solver_integration")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_newton_solver_integration.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    target("test_profiling")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_profiling.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    -- ===========================================================================
+    -- New modular unit tests (IPC framework testing suite)
+    -- ===========================================================================
+
+    target("test_lbvh")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_lbvh.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    target("test_narrow_phase")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_narrow_phase.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    target("test_energy_assembly")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_energy_assembly.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    target("test_pcg_solver")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_pcg_solver.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    target("test_ccd")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_ccd.cpp")
+        add_deps("luisa-compute-solver-lib")
+
+    target("test_integration")
+        add_rules("lc_basic_settings", {project_kind = "binary", enable_exception = true})
+        add_files("UnitTest/test_integration.cpp")
+        add_deps("luisa-compute-solver-lib")
 end
 
 if cfg_bool(false, "lcs_build_pybindings") then
@@ -204,15 +248,43 @@ if cfg_bool(false, "lcs_build_pybindings") then
             set_filename("lcs_py.pyd")
         else
             set_filename("lcs_py.so")
+            set_prefixname("")
         end
 
-        on_load(function(target)
+        -- Source files (mirrors PythonBindings/CMakeLists.txt)
+        add_files("PythonBindings/src/python_bindings.cpp")
+        add_files("Application/app_simulation_demo_config.cpp")
+
+        -- Include directories
+        add_includedirs("Application")
+
+        -- Dependencies (mirrors CMake: luisa-compute-solver-lib, yyjson, luisa::compute)
+        add_deps("luisa-compute-solver-lib", "lc-yyjson")
+
+        after_load(function(target)
             local pyexe = get_config("lcs_python_executable")
             if not pyexe or pyexe == "" then
                 raise("lcs_build_pybindings requires --lcs_python_executable=<path-to-python>")
             end
             if not os.isfile(pyexe) then
                 raise("lcs_python_executable does not exist: " .. pyexe)
+            end
+
+            -- Set correct Python extension suffix (e.g. lcs_py.cpython-313-darwin.so)
+            local ext_suffix = os.iorunv(pyexe, {"-c", "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))"}):trim()
+            if ext_suffix and ext_suffix ~= "" then
+                target:set("filename", "lcs_py" .. ext_suffix)
+            end
+
+            -- RPATH so lcs_py.so finds runtime libs next to it (build/lib, build/bin)
+            if target:is_plat("macosx") then
+                target:add("shflags", "-Wl,-rpath,@loader_path/lib", "-Wl,-rpath,@loader_path/bin", "-Wl,-rpath,@loader_path", {force = true})
+                target:add("shflags", "-undefined", "dynamic_lookup", {force = true})
+                target:add("ldflags", "-Wl,-rpath,@loader_path/lib", "-Wl,-rpath,@loader_path/bin", "-Wl,-rpath,@loader_path", {force = true})
+                target:add("ldflags", "-undefined", "dynamic_lookup", {force = true})
+            elseif target:is_plat("linux") then
+                target:add("shflags", "-Wl,-rpath,$ORIGIN/lib", "-Wl,-rpath,$ORIGIN/bin", "-Wl,-rpath,$ORIGIN", {force = true})
+                target:add("ldflags", "-Wl,-rpath,$ORIGIN/lib", "-Wl,-rpath,$ORIGIN/bin", "-Wl,-rpath,$ORIGIN", {force = true})
             end
 
             local probe = [[import sys,sysconfig,pathlib;v=f"{sys.version_info[0]}{sys.version_info[1]}";inc=sysconfig.get_path("include") or "";platinc=sysconfig.get_path("platinclude") or "";base=pathlib.Path(sys.base_prefix);libdir=(base/"libs");print("INCLUDE="+inc);print("PLATINCLUDE="+platinc);print("LIBDIR="+str(libdir));print("LIB=python"+v)]]
@@ -229,13 +301,47 @@ if cfg_bool(false, "lcs_build_pybindings") then
             if plat_include_dir and plat_include_dir ~= "" and plat_include_dir ~= include_dir then
                 target:add("includedirs", plat_include_dir)
             end
-            target:add("includedirs", "ext/pybind11/include")
+            target:add("includedirs", path.join(os.projectdir(), "ext/pybind11/include"))
 
-            if lib_dir and lib_dir ~= "" then
-                target:add("linkdirs", lib_dir)
-            end
-            if py_lib and py_lib ~= "" then
-                target:add("links", py_lib)
+            if target:is_plat("windows") then
+                if lib_dir and lib_dir ~= "" then
+                    target:add("linkdirs", lib_dir)
+                end
+                if py_lib and py_lib ~= "" then
+                    target:add("links", py_lib)
+                end
             end
         end)
+    target_end()
+
+    -- Stub generation target (equivalent to cmake --build build --target stubs)
+    target("stubs")
+        set_kind("phony")
+        add_deps("lcs_py")
+        on_build(function(target)
+            local pyexe = get_config("lcs_python_executable")
+            if not pyexe or pyexe == "" then
+                raise("stubs target requires --lcs_python_executable=<path-to-python>")
+            end
+            local bindir = path.join(os.projectdir(), "build", "bin")
+            local stubout = path.join(os.projectdir(), "PythonBindings", "python")
+            os.execv(pyexe, {"-m", "pybind11_stubgen", "lcs_py", "-o", stubout}, {envs = {PYTHONPATH = bindir}})
+            local single_stub = path.join(stubout, "lcs_py.pyi")
+            local package_dir = path.join(stubout, "lcs_py")
+            local package_init = path.join(package_dir, "__init__.pyi")
+            if os.isfile(single_stub) then
+                os.mkdir(package_dir)
+                if os.isfile(package_init) then
+                    os.rm(package_init)
+                end
+                os.mv(single_stub, package_init)
+                print("Normalized stub: " .. single_stub .. " -> " .. package_init)
+            elseif os.isfile(package_init) then
+                print("Stub already in package form: " .. package_init)
+            else
+                raise("pybind11_stubgen produced neither " .. single_stub .. " nor " .. package_init)
+            end
+            print("Stubs generated to: " .. stubout)
+        end)
+    target_end()
 end

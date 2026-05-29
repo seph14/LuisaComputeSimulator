@@ -9,6 +9,7 @@
 #include "Initializer/init_mesh_data.h"
 #include "LinearSolver/precond_cg.h"
 #include "SimulationCore/base_mesh.h"
+#include "SimulationCore/joint_constraint.h"
 #include "SimulationCore/simulation_data.h"
 #include "SimulationCore/collision_data.h"
 #include "Utils/buffer_filler.h"
@@ -26,6 +27,7 @@
 #include "Energies/bending_energy_kernel.h"
 #include "Energies/abd_inertia_energy.h"
 #include "Energies/abd_ortho_energy.h"
+#include "Energies/joint_constraint_energy.h"
 #include "Energies/tet_elastic_energy.h"
 #include "SimulationCore/scene_params.h"
 
@@ -109,20 +111,16 @@ namespace lcs
 		~SolverInterface() {}
 
 	private:
+	protected:
 		void init_world_data();
 		void init_animation();
-
-	protected:
+		void compile_compute_energy(AsyncCompiler& compiler);
 		void init_data(luisa::compute::Device& device, luisa::compute::Stream& stream);
 		void compile(AsyncCompiler& compiler);
 		void set_data_pointer(SolverData& solver_data, SolverHelper& solver_helper);
 
 	public:
 		void restart_system();
-		void device_compute_elastic_energy(luisa::compute::Stream& stream, std::map<std::string, double>& energy_list);
-		void compile_compute_energy(AsyncCompiler& compiler);
-
-	public:
 		void save_current_frame_state_to_host(const std::string_view& full_path);
 		void load_saved_state_from_host(const std::string_view& full_path);
 		void save_mesh_to_obj(const std::string_view& full_path);
@@ -136,16 +134,26 @@ namespace lcs
 		void get_object_sim_result_by_registration_id(uint registration_id,
 			std::vector<std::array<float, 3>>&			   output_positions,
 			std::vector<std::array<uint, 3>>&			   output_triangles);
+
+		std::array<float, 3> get_rigid_body_translation(uint registration_id);
+		std::array<float, 3> get_rigid_body_scaling(uint registration_id);
+		std::array<float, 4> get_rigid_body_rotation_quaternion(uint registration_id);
+		std::array<float, 3> get_rigid_body_rotation_axis_angle(uint registration_id);
+
 		void update_per_vertex_animation(const uint meshIdx, const uint local_vid, const std::array<float, 3>& target_position);
 		void update_per_body_animation(const uint body_id, const std::array<float, 3>& target_translation, const std::array<float, 3>& target_rotation);
 		void update_default_animations();
 
 	protected:
+		void device_compute_elastic_energy(luisa::compute::Stream& stream, std::map<std::string, double>& energy_list);
 		void physics_step_prev_operation();
 		void physics_step_post_operation();
 
 	private:
-		std::vector<Initializer::WorldData> world_data;
+		std::vector<Initializer::WorldData>		  world_data;
+		std::vector<FixedJointConstraintDesc>	  fixed_joint_descs;
+		std::vector<PrismaticJointConstraintDesc> prismatic_joint_descs;
+		std::vector<RevoluteJointConstraintDesc>  revolute_joint_descs; // kept for API compat; all stored in JointConstraint
 
 		SolverData	 solver_data;
 		SolverHelper solver_helper;
@@ -206,6 +214,18 @@ namespace lcs
 		// 	data.registration_index = static_cast<uint>(world_data.size() - 1);
 		// 	return data;
 		// }
+		void add_fixed_joint(const FixedJointConstraintDesc& desc)
+		{
+			fixed_joint_descs.push_back(desc);
+		}
+		void add_prismatic_joint(const PrismaticJointConstraintDesc& desc)
+		{
+			prismatic_joint_descs.push_back(desc);
+		}
+		void add_revolute_joint(const RevoluteJointConstraintDesc& desc)
+		{
+			revolute_joint_descs.push_back(desc);
+		}
 		// uint register_world_data_from_array(const std::string_view& name, const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces)
 		// {
 		// 	auto& data = world_data.emplace_back().load_mesh_from_array(vertices, faces).set_name(name);
@@ -240,6 +260,7 @@ namespace lcs
 		BendingEnergy*		   get_bending_energy() const { return bending_energy.get(); }
 		AbdOrthoEnergy*		   get_abd_ortho_energy() const { return abd_ortho_energy.get(); }
 		TetElasticEnergy*	   get_tet_elastic_energy() const { return tet_elastic_energy.get(); }
+		JointConstraintEnergy* get_joint_constraint_energy() const { return joint_constraint_energy.get(); }
 
 	private:
 		luisa::compute::Shader<1, luisa::compute::BufferView<float>> fn_reset_float;
@@ -252,6 +273,7 @@ namespace lcs
 		std::unique_ptr<BendingEnergy>		   bending_energy;
 		std::unique_ptr<AbdOrthoEnergy>		   abd_ortho_energy;
 		std::unique_ptr<TetElasticEnergy>	   tet_elastic_energy;
+		std::unique_ptr<JointConstraintEnergy> joint_constraint_energy;
 		// luisa::compute::Shader<1,
 		//     luisa::compute::BufferView<float3>,
 		//     luisa::compute::BufferView<float3>,

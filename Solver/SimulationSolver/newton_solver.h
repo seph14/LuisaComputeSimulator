@@ -141,6 +141,7 @@ namespace lcs
 		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>>			 fn_material_energy_assembly_soft_inertia;
 		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, uint>		 fn_material_energy_assembly_abd_inertia;
 		luisa::compute::Shader<1, Constitutions::AbdOrthogonality<luisa::compute::Buffer>, uint> fn_material_energy_assembly_abd_ortho;
+		luisa::compute::Shader<1, Constitutions::JointConstraint<luisa::compute::Buffer>, uint>	 fn_material_energy_assembly_joint;
 
 		luisa::compute::Shader<1, luisa::compute::Buffer<float3>, luisa::compute::Buffer<float3>>												  fn_pcg_spmv_diag;
 		luisa::compute::Shader<1, luisa::compute::Buffer<float3>, luisa::compute::Buffer<float3>>												  fn_pcg_spmv_offdiag_perVert;

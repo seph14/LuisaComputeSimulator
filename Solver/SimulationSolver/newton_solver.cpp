@@ -13,6 +13,9 @@
 #include "Core/lc_to_eigen.h"
 #include "Core/scalar.h"
 #include "Core/xbasic_types.h"
+#include "Energies/detail/fixed_joint_constaint.hpp"
+#include "Energies/detail/prismatic_joint_constaint.hpp"
+#include "Energies/detail/revolute_joint_constaint.hpp"
 #include "SimulationCore/scene_params.h"
 #include "Utils/cpu_parallel.h"
 #include "Utils/reduce_helper.h"
@@ -27,6 +30,7 @@
 #include "luisa/core/clock.h"
 #include <luisa/dsl/sugar.h>
 #include <vector>
+#include "Utils/profiler.h"
 
 // AMGCL
 #if defined(USE_AMGCL_FOR_SIM) && USE_AMGCL_FOR_SIM
@@ -793,7 +797,14 @@ namespace lcs
 			[perform_assembly_interface](Var<Constitutions::AbdOrthogonality<luisa::compute::Buffer>> constraint,
 				const Uint																			  prefix)
 			{ perform_assembly_interface(constraint, prefix); });
+
+		compiler.compile(
+			fn_material_energy_assembly_joint,
+			[perform_assembly_interface](Var<Constitutions::JointConstraint<luisa::compute::Buffer>> constraint,
+				const Uint																			 prefix)
+			{ perform_assembly_interface(constraint, prefix); });
 	}
+
 	void NewtonSolver::compile_evaluate(AsyncCompiler& compiler, const luisa::compute::ShaderOption& default_option)
 	{
 		using namespace luisa::compute;
@@ -1184,6 +1195,16 @@ namespace lcs
 					{
 						const uint vid = prefix_dof_rigid + block_idx;
 						assembly_template2(vid, abd_ortho, adj_verts, sa_cgB, sa_cgA_diag, sa_cgA_offdiag_triplet);
+					});
+
+			auto& joints = host_sim_data->get_joint_constraint_data();
+			if (joints.is_valid())
+				CpuParallel::parallel_for(0,
+					num_dof_rigid,
+					[&](const uint block_idx)
+					{
+						const uint vid = prefix_dof_rigid + block_idx;
+						assembly_template2(vid, joints, adj_verts, sa_cgB, sa_cgA_diag, sa_cgA_offdiag_triplet);
 					});
 		}
 	}
@@ -2004,29 +2025,43 @@ namespace lcs
 	}
 	void NewtonSolver::physics_step_CPU()
 	{
+		PROFILE_FRAME("physics_step_CPU_" + std::to_string(get_scene_params().current_frame));
+		PROFILE_PUSH("total_step");
+
 		luisa::compute::Device& device = *device_state.device;
 		luisa::compute::Stream& stream = *device_state.stream;
 		// Input
+		PROFILE_PUSH("prev_operation");
 		lcs::SolverInterface::physics_step_prev_operation();
+		PROFILE_POP();
 
 		constexpr bool use_eigen = ConjugateGradientSolver::use_eigen;
 		constexpr bool use_upper_triangle = ConjugateGradientSolver::use_upper_triangle;
 
 		auto update_contact_set = [&]()
 		{
+			PROFILE_PUSH("update_contact_set");
 			device_reset_contact_list(stream);
 
 			if (!get_scene_params().use_self_collision)
+			{
+				PROFILE_POP();
 				return;
+			}
 			stream << sim_data->sa_x.copy_from(host_sim_data->sa_x.data());
 
 			device_update_contact_list(device, stream);
 			device_triplet_sort(device, stream);
+			PROFILE_POP();
 		};
 		auto evaluate_contact = [&]()
 		{
+			PROFILE_PUSH("evaluate_contact");
 			if (!get_scene_params().use_self_collision)
+			{
+				PROFILE_POP();
 				return;
+			}
 			stream << sim_data->sa_cgB.copy_from(host_sim_data->sa_cgB.data())
 				   << sim_data->sa_cgA_diag.copy_from(host_sim_data->sa_cgA_diag.data());
 
@@ -2048,6 +2083,7 @@ namespace lcs
 			stream << sim_data->sa_cgB.copy_to(host_sim_data->sa_cgB.data())
 				   << sim_data->sa_cgA_diag.copy_to(host_sim_data->sa_cgA_diag.data())
 				   << luisa::compute::synchronize();
+			PROFILE_POP();
 		};
 		auto pcg_spmv_interface = [&](const std::vector<float3>& input_ptr, std::vector<float3>& output_ptr) -> void
 		{
@@ -2056,6 +2092,7 @@ namespace lcs
 		};
 		auto linear_solver_interface = [&]()
 		{
+			PROFILE_PUSH("linear_solver");
 			if constexpr (false)
 			{
 				host_solve_eigen(stream);
@@ -2065,6 +2102,7 @@ namespace lcs
 				pcg_solver->host_solve(stream, pcg_spmv_interface, []()
 					{ return 0.0; });
 			}
+			PROFILE_POP();
 		};
 
 		const float substep_dt = lcs::get_scene_params().get_substep_dt();
@@ -2080,14 +2118,18 @@ namespace lcs
 		// Init LBVH
 		if (get_scene_params().use_self_collision)
 		{
+			PROFILE_PUSH("lbvh_construction");
 			buffer_upload(stream, host_sim_data->sa_x_step_start, sim_data->sa_x_step_start);
 			device_construct_lbvh(stream);
+			PROFILE_POP();
 		}
 		// for (uint substep = 0; substep < get_scene_params().num_substep; substep++)
 		{
 			LUISA_INFO("=== In frame {} ===", get_scene_params().current_frame);
 
+			PROFILE_PUSH("predict_position");
 			host_predict_position(); // => q_tilde
+			PROFILE_POP();
 
 			if (get_scene_params().use_energy_linesearch)
 			{
@@ -2104,6 +2146,7 @@ namespace lcs
 				{
 					break;
 				}
+				PROFILE_PUSH("nonlinear_iter_" + std::to_string(iter));
 				get_scene_params().current_nonlinear_iter = iter;
 
 				// Record position at iteration start, for linear interpolation: x = x_iter_start + alpha * dx
@@ -2124,6 +2167,7 @@ namespace lcs
 
 				if constexpr (true)
 				{
+					PROFILE_PUSH("energy_evaluation");
 					if (auto* e = get_spring_energy())
 					{
 						e->host_evaluate(*host_sim_data, *host_mesh_data);
@@ -2148,6 +2192,10 @@ namespace lcs
 					{
 						e->host_evaluate(*host_sim_data, *host_mesh_data);
 					}
+					if (auto* e = get_joint_constraint_energy())
+					{
+						e->host_evaluate(*host_sim_data, *host_mesh_data);
+					}
 					if (auto* e = get_ground_collision_energy())
 					{
 						if (get_scene_params().use_floor)
@@ -2157,8 +2205,11 @@ namespace lcs
 					{
 						e->host_evaluate(*host_sim_data, *host_mesh_data);
 					}
+					PROFILE_POP();
 
+					PROFILE_PUSH("material_assembly");
 					host_material_energy_assembly();
+					PROFILE_POP();
 
 					evaluate_contact();
 
@@ -2178,40 +2229,62 @@ namespace lcs
 					buffer_upload(stream, host_sim_data->sa_dx, sim_data->sa_dx);
 				}
 
+				PROFILE_PUSH("line_search");
 				line_search(device, stream, dirichlet_converged, global_converged);
+				PROFILE_POP();
 
 				narrow_phase_detector->resize_buffers(device, stream); // Pre-allocatation
+
+				PROFILE_POP(); // End of nonlinear iteration
 
 				if (iter == 99)
 					LUISA_WARNING("Solver is not converged in 100 iters");
 			}
+			PROFILE_PUSH("update_velocity");
 			host_update_velocity();
+			PROFILE_POP();
 			host_apply_q_to_x(host_sim_data->sa_q_v, host_sim_data->sa_v);
 		}
+
+		PROFILE_POP(); // End total_step
 
 		// Output
 		lcs::SolverInterface::physics_step_post_operation();
 	}
 	void NewtonSolver::physics_step_GPU()
 	{
+		PROFILE_FRAME("physics_step_GPU_" + std::to_string(get_scene_params().current_frame));
+		PROFILE_PUSH("total_step");
+
 		luisa::compute::Device& device = *device_state.device;
 		luisa::compute::Stream& stream = *device_state.stream;
 		// Read frame start position and velocity
+		PROFILE_PUSH("prev_operation");
 		lcs::SolverInterface::physics_step_prev_operation(); // => sa_q_step_start, sa_q_v
+		PROFILE_POP();
 
 		auto update_contact_set = [&]()
 		{
+			PROFILE_PUSH("update_contact_set");
 			device_reset_contact_list(stream);
 
 			if (!get_scene_params().use_self_collision)
+			{
+				PROFILE_POP();
 				return;
+			}
 			device_update_contact_list(device, stream);
 			device_triplet_sort(device, stream);
+			PROFILE_POP();
 		};
 		auto evaluate_contact = [&]()
 		{
+			PROFILE_PUSH("evaluate_contact");
 			if (!get_scene_params().use_self_collision)
+			{
+				PROFILE_POP();
 				return;
+			}
 			narrow_phase_detector->device_perPair_evaluate_gradient_hessian(stream,
 				sim_data->sa_x,
 				sim_data->sa_x_step_start,
@@ -2226,6 +2299,7 @@ namespace lcs
 
 			narrow_phase_detector->device_assemble_contact_triplet(
 				stream, mesh_data->sa_scaled_model_x, host_sim_data->num_verts_soft);
+			PROFILE_POP();
 		};
 
 		auto pcg_spmv_interface = [&](const luisa::compute::Buffer<float3>& input_ptr,
@@ -2238,6 +2312,7 @@ namespace lcs
 		// return dq, dx
 		auto linear_solver_interface = [&]()
 		{
+			PROFILE_PUSH("linear_solver");
 			if constexpr (false)
 			{
 				stream << sim_data->sa_cgB.copy_to(host_sim_data->sa_cgB.data())
@@ -2261,6 +2336,7 @@ namespace lcs
 				buffer_download(stream, sim_data->sa_dx, host_sim_data->sa_dx);
 				stream << luisa::compute::synchronize();
 			}
+			PROFILE_POP();
 		};
 
 		// Upload frame start information
@@ -2280,14 +2356,18 @@ namespace lcs
 		// Init LBVH
 		if (get_scene_params().use_self_collision)
 		{
+			PROFILE_PUSH("lbvh_construction");
 			device_construct_lbvh(stream);
+			PROFILE_POP();
 		}
 
 		// for (uint substep = 0; substep < get_scene_params().num_substep; substep++)
 		{
 			{
+				PROFILE_PUSH("predict_position");
 				stream << fn_predict_position(substep_dt, get_scene_params().gravity).dispatch(host_sim_data->num_dof);
 				buffer_download(stream, sim_data->sa_q_tilde, host_sim_data->sa_q_tilde, /*wait=*/false);
+				PROFILE_POP();
 			}
 
 			double prev_state_energy = Float_max;
@@ -2303,6 +2383,7 @@ namespace lcs
 				{
 					break;
 				}
+				PROFILE_PUSH("nonlinear_iter_" + std::to_string(iter));
 				get_scene_params().current_nonlinear_iter = iter;
 
 				buffer_copy(stream, sim_data->sa_x, sim_data->sa_x_iter_start);
@@ -2317,6 +2398,7 @@ namespace lcs
 					   << fn_reset_cgA_offdiag_triplet().dispatch(sim_data->sa_cgA_fixtopo_offdiag_triplet.size());
 
 				{
+					PROFILE_PUSH("energy_and_assembly");
 					const uint num_dof_soft = host_sim_data->num_verts_soft;
 					const uint num_dof_rigid = host_sim_data->num_affine_bodies * 4;
 
@@ -2404,29 +2486,47 @@ namespace lcs
 									  .dispatch(abd_orthogonality_data.constraint_offsets_in_adjlist.size());
 					}
 
+					const auto& joint_data = sim_data->get_joint_constraint_data();
+					if (joint_data.is_valid())
+					{
+						get_joint_constraint_energy()->device_evaluate(
+							stream, joint_data, joint_data.get_num_indices());
+						stream << fn_material_energy_assembly_joint(joint_data, num_dof_soft)
+									  .dispatch(joint_data.constraint_offsets_in_adjlist.size());
+					}
+
 					update_contact_set();
 
 					evaluate_contact();
+					PROFILE_POP(); // End energy_and_assembly
 				}
 
 				stream << luisa::compute::synchronize();
 
 				linear_solver_interface(); // => dq, dx
 
+				PROFILE_PUSH("line_search");
 				line_search(device, stream, dirichlet_converged, global_converged);
+				PROFILE_POP();
 
 				narrow_phase_detector->resize_buffers(device, stream); // Pre-allocatation
+
+				PROFILE_POP(); // End nonlinear iteration
 
 				if (iter == 99)
 					LUISA_WARNING("Solver is not converged in 100 iters");
 			}
 
+			PROFILE_PUSH("update_velocity");
 			stream << fn_update_velocity(substep_dt, get_scene_params().fix_scene, get_scene_params().damping_rate)
 						  .dispatch(host_sim_data->num_dof);
 			device_apply_q_to_x(stream, sim_data->sa_q_v, sim_data->sa_v);
+			PROFILE_POP();
 		}
 
 		stream << luisa::compute::synchronize();
+
+		PROFILE_POP(); // End total_step
 
 		// Copy to host
 		{

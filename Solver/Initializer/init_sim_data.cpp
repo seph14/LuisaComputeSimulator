@@ -11,7 +11,10 @@
 #include "Initializer/initializer_utils.h"
 #include "luisa/core/logging.h"
 #include "luisa/core/mathematics.h"
+#include <cmath>
+#include <limits>
 #include <span>
+#include <type_traits>
 
 namespace lcs::Initializer
 {
@@ -21,7 +24,7 @@ namespace lcs::Initializer
 	std::array<TypeOffset, N*(N - 1)> get_offsets_in_adjlist_from_adjacent_list(
 		const std::vector<std::vector<uint>>& vert_adj_verts,
 		const std::vector<uint>&			  vert_adj_verts_csr,
-		const luisa::Vector<uint, N>&		  element)
+		const auto&							  element)
 	{
 		std::array<TypeOffset, N*(N - 1)> offsets = { 0 };
 		uint							  idx = 0;
@@ -206,9 +209,25 @@ namespace lcs::Initializer
 		}
 	};
 
-	template <typename Derived>
+	template <typename Func>
+	void traverse_indices_func_uint(const uint& idx, Func func)
+	{
+		func(0u, idx);
+	}
+
+	template <typename Element, size_t N, typename Func>
+	void traverse_indices_func_array(const Element& indices, Func func)
+	{
+		for (size_t i = 0; i < N; i++)
+		{
+			func(static_cast<uint>(i), indices[i]);
+		}
+	}
+
+	template <typename Derived, typename FuncTraverse>
 	static void build_adj_list_and_init_grad_hess(std::vector<std::vector<uint>>& adj_map,
-		Constitutions::ConstitutionInterface<std::vector, Derived>&				  constitution_template)
+		Constitutions::ConstitutionInterface<std::vector, Derived>&				  constitution_template,
+		FuncTraverse															  traverse_func)
 	{
 		constexpr size_t N = Derived::get_num_verts_per_constaint();
 		constexpr size_t grad_size = N;
@@ -238,34 +257,51 @@ namespace lcs::Initializer
 			for (uint eid = 0; eid < num_constraint; eid++)
 			{
 				auto element = sa_constitution_elements[eid];
-				for (uint j = 0; j < N; j++)
-				{
-					if constexpr (N == 1)
-					{
-						vert_adj_constraints[element].push_back(eid);
-					}
-					else
-					{
-						vert_adj_constraints[element[j]].push_back(eid);
-					}
-				}
+				traverse_func(element,
+					[&](const uint ii, const uint vid)
+					{ vert_adj_constraints[vid].push_back(eid); });
 				if constexpr (N != 1)
 				{
-					for (uint ii = 0; ii < N; ii++)
-					{
-						for (uint jj = 0; jj < N; jj++)
+					traverse_func(element,
+						[&](const uint ii, const uint vid)
 						{
-							if (ii != jj)
-							{
-								insert_adj_vert(adj_map, element[ii], element[jj]);
-							}
-						}
-					}
+							traverse_func(element,
+								[&](const uint jj, const uint adj_vid)
+								{
+									if (ii != jj)
+									{
+										insert_adj_vert(adj_map, vid, adj_vid);
+									}
+								});
+						});
 				}
 			}
 			upload_2d_csr_from(vert_adj_constraints_csr, vert_adj_constraints);
 		}
 	};
+
+	// Overload without explicit traverse function: choose appropriate traverser automatically.
+	template <typename Derived>
+	static void build_adj_list_and_init_grad_hess(std::vector<std::vector<uint>>& adj_map,
+		Constitutions::ConstitutionInterface<std::vector, Derived>&				  constitution_template)
+	{
+		constexpr size_t N = Derived::get_num_verts_per_constaint();
+
+		auto auto_traverse = [](auto const& element, auto func)
+		{
+			using ElemT = std::decay_t<decltype(element)>;
+			if constexpr (std::is_integral_v<ElemT>)
+			{
+				traverse_indices_func_uint(element, func);
+			}
+			else
+			{
+				traverse_indices_func_array<ElemT, N>(element, func);
+			}
+		};
+
+		build_adj_list_and_init_grad_hess(adj_map, constitution_template, auto_traverse);
+	}
 
 	template <typename Derived>
 	static void init_constitution_offsets_in_adjlist(const std::vector<std::vector<uint>>& adj_map,
@@ -349,7 +385,10 @@ namespace lcs::Initializer
 
 	void init_sim_data(const std::vector<lcs::Initializer::WorldData>& world_data,
 		lcs::MeshData<std::vector>*									   mesh_data,
-		lcs::SimulationData<std::vector>*							   sim_data)
+		lcs::SimulationData<std::vector>*							   sim_data,
+		const std::vector<lcs::FixedJointConstraintDesc>&			   fixed_joint_descs,
+		const std::vector<lcs::PrismaticJointConstraintDesc>&		   prismatic_joint_descs,
+		const std::vector<lcs::RevoluteJointConstraintDesc>&		   revolute_joint_descs)
 	{
 		// Calculate number of energy element
 		constexpr bool cull_unused_constraints = true;
@@ -1086,6 +1125,183 @@ namespace lcs::Initializer
 			};
 		}
 
+		// Init joint constraints
+		{
+			auto normalize_axis = [](const float3& axis) -> float3
+			{
+				const float n2 = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
+				if (n2 < 1.0e-12f)
+				{
+					return luisa::make_float3(1.0f, 0.0f, 0.0f);
+				}
+				const float inv_n = 1.0f / std::sqrt(n2);
+				return inv_n * axis;
+			};
+
+			auto try_get_rigid_q_indices = [&](uint registration_id, uint4& out_indices) -> bool
+			{
+				if (registration_id >= mesh_data->input_to_sorted_mesh_id.size())
+				{
+					LUISA_WARNING("Joint uses invalid registration id {}", registration_id);
+					return false;
+				}
+
+				const uint sorted_idx = mesh_data->input_to_sorted_mesh_id[registration_id];
+				if (sorted_idx >= world_data.size())
+				{
+					LUISA_WARNING("Joint registration id {} maps to invalid sorted index {}", registration_id, sorted_idx);
+					return false;
+				}
+				if (!world_data[sorted_idx].holds<lcs::Material::RigidMaterial>())
+				{
+					LUISA_WARNING("Joint registration id {} is not rigid.", registration_id);
+					return false;
+				}
+
+				const uint prefix_vid = mesh_data->prefix_num_verts[sorted_idx];
+				if (prefix_vid >= sim_data->sa_x_to_dof_map.size())
+				{
+					LUISA_WARNING("Joint registration id {} has invalid prefix_vid {}", registration_id, prefix_vid);
+					return false;
+				}
+
+				const uint dof_start = sim_data->sa_x_to_dof_map[prefix_vid].get_dof_idx();
+				if (dof_start + 3u >= sim_data->sa_q.size())
+				{
+					LUISA_WARNING("Joint registration id {} has invalid dof_start {}", registration_id, dof_start);
+					return false;
+				}
+
+				out_indices = luisa::make_uint4(dof_start + 0u, dof_start + 1u, dof_start + 2u, dof_start + 3u);
+				return true;
+			};
+
+			auto&				joint_data = sim_data->get_joint_constraint_data();
+			const luisa::float3 default_axis{ 1.f, 0.f, 0.f };
+			const auto&			rest_q = sim_data->sa_rest_q;
+
+			auto make_rest_A = [&](const uint4& idx_a)
+			{
+				return luisa::make_float3x3(rest_q[idx_a.y], rest_q[idx_a.z], rest_q[idx_a.w]);
+			};
+			auto make_rest_B = [&](const uint4& idx_b)
+			{
+				return luisa::make_float3x3(rest_q[idx_b.y], rest_q[idx_b.z], rest_q[idx_b.w]);
+			};
+			auto compute_rest_position_delta_local_a = [&](const uint4& idx_a, const uint4& idx_b, const float3& anchor_a, const float3& anchor_b)
+			{
+				const float3 p_a = rest_q[idx_a.x] + rest_q[idx_a.y] * anchor_a.x + rest_q[idx_a.z] * anchor_a.y + rest_q[idx_a.w] * anchor_a.z;
+				const float3 p_b = rest_q[idx_b.x] + rest_q[idx_b.y] * anchor_b.x + rest_q[idx_b.z] * anchor_b.y + rest_q[idx_b.w] * anchor_b.z;
+				const float3 d_world = p_b - p_a;
+				const auto	 A_inv = luisa::inverse(make_rest_A(idx_a));
+				return A_inv * d_world;
+			};
+			auto compute_rest_rotation_a_to_b = [&](const uint4& idx_a, const uint4& idx_b)
+			{
+				const auto A_inv = luisa::inverse(make_rest_A(idx_a));
+				const auto B = make_rest_B(idx_b);
+				const auto R_ab = A_inv * B;
+				return std::array<float3, 3>{ R_ab[0], R_ab[1], R_ab[2] };
+			};
+
+			using uint8 = std::array<uint, 8>;
+
+			for (const auto& desc : fixed_joint_descs)
+			{
+				uint4 idx_a{};
+				uint4 idx_b{};
+				if (!try_get_rigid_q_indices(desc.body_a_registration, idx_a)
+					|| !try_get_rigid_q_indices(desc.body_b_registration, idx_b))
+				{
+					continue;
+				}
+				const auto rest_pos_local_a = compute_rest_position_delta_local_a(idx_a, idx_b, desc.anchor_a_local, desc.anchor_b_local);
+				const auto rest_rot_a_to_b = compute_rest_rotation_a_to_b(idx_a, idx_b);
+				uint8	   idx_ext = { idx_a[0], idx_a[1], idx_a[2], idx_a[3], idx_b[0], idx_b[1], idx_b[2], idx_b[3] };
+				joint_data.constraint_indices.push_back(idx_ext);
+				joint_data.anchor_a_local.push_back(desc.anchor_a_local);
+				joint_data.anchor_b_local.push_back(desc.anchor_b_local);
+				joint_data.rest_position_delta.push_back(rest_pos_local_a);
+				joint_data.rest_rot_col0_a_to_b.push_back(rest_rot_a_to_b[0]);
+				joint_data.rest_rot_col1_a_to_b.push_back(rest_rot_a_to_b[1]);
+				joint_data.rest_rot_col2_a_to_b.push_back(rest_rot_a_to_b[2]);
+				joint_data.axis_world.push_back(default_axis);
+				joint_data.axis_a_local.push_back(default_axis);
+				joint_data.axis_b_local.push_back(default_axis);
+				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_rot));
+				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Fixed));
+				joint_data.slide_limits.push_back(luisa::make_float2(-std::numeric_limits<float>::max(), std::numeric_limits<float>::max()));
+			}
+
+			for (const auto& desc : prismatic_joint_descs)
+			{
+				uint4 idx_a{};
+				uint4 idx_b{};
+				if (!try_get_rigid_q_indices(desc.body_a_registration, idx_a)
+					|| !try_get_rigid_q_indices(desc.body_b_registration, idx_b))
+				{
+					continue;
+				}
+				const auto rest_rot_a_to_b = compute_rest_rotation_a_to_b(idx_a, idx_b);
+				// For a prismatic joint, only the rest offset perpendicular to the sliding
+				// axis should be constrained. The component along the axis is the slide
+				// coordinate and is governed only by slide_limits.
+				const auto	rest_pos_local_a = compute_rest_position_delta_local_a(idx_a, idx_b, desc.anchor_a_local, desc.anchor_b_local);
+				const auto	A0_inv_prismatic = luisa::inverse(make_rest_A(idx_a));
+				const auto	axis_a_local_prismatic = normalize_axis(A0_inv_prismatic * normalize_axis(desc.axis_world));
+				const float rest_slide = luisa::dot(rest_pos_local_a, axis_a_local_prismatic);
+				const auto	rest_pos_perp_local_a = rest_pos_local_a - rest_slide * axis_a_local_prismatic;
+				uint8		idx_ext = { idx_a[0], idx_a[1], idx_a[2], idx_a[3], idx_b[0], idx_b[1], idx_b[2], idx_b[3] };
+				joint_data.constraint_indices.push_back(idx_ext);
+				joint_data.anchor_a_local.push_back(desc.anchor_a_local);
+				joint_data.anchor_b_local.push_back(desc.anchor_b_local);
+				joint_data.rest_position_delta.push_back(rest_pos_perp_local_a);
+				joint_data.rest_rot_col0_a_to_b.push_back(rest_rot_a_to_b[0]);
+				joint_data.rest_rot_col1_a_to_b.push_back(rest_rot_a_to_b[1]);
+				joint_data.rest_rot_col2_a_to_b.push_back(rest_rot_a_to_b[2]);
+				// Compute body-local sliding axis: axis_a_local = normalize(A0^{-1} * axis_world).
+				// This ensures the sliding direction co-rotates with body A at runtime.
+				joint_data.axis_world.push_back(normalize_axis(desc.axis_world));
+				joint_data.axis_a_local.push_back(axis_a_local_prismatic);
+				joint_data.axis_b_local.push_back(default_axis);
+				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_rot));
+				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Prismatic));
+				joint_data.slide_limits.push_back(luisa::make_float2(desc.slide_min, desc.slide_max));
+			}
+
+			for (const auto& desc : revolute_joint_descs)
+			{
+				uint4 idx_a{};
+				uint4 idx_b{};
+				if (!try_get_rigid_q_indices(desc.body_a_registration, idx_a)
+					|| !try_get_rigid_q_indices(desc.body_b_registration, idx_b))
+				{
+					continue;
+				}
+				const auto rest_pos_local_a = compute_rest_position_delta_local_a(idx_a, idx_b, desc.anchor_a_local, desc.anchor_b_local);
+				const auto rest_rot_a_to_b = compute_rest_rotation_a_to_b(idx_a, idx_b);
+
+				uint8 idx_ext = { idx_a[0], idx_a[1], idx_a[2], idx_a[3], idx_b[0], idx_b[1], idx_b[2], idx_b[3] };
+				joint_data.constraint_indices.push_back(idx_ext);
+				joint_data.anchor_a_local.push_back(desc.anchor_a_local);
+				joint_data.anchor_b_local.push_back(desc.anchor_b_local);
+				joint_data.rest_position_delta.push_back(rest_pos_local_a);
+				joint_data.rest_rot_col0_a_to_b.push_back(rest_rot_a_to_b[0]);
+				joint_data.rest_rot_col1_a_to_b.push_back(rest_rot_a_to_b[1]);
+				joint_data.rest_rot_col2_a_to_b.push_back(rest_rot_a_to_b[2]);
+				joint_data.axis_world.push_back(normalize_axis(desc.axis_world));
+				joint_data.axis_a_local.push_back(normalize_axis(desc.axis_a_local));
+				joint_data.axis_b_local.push_back(normalize_axis(desc.axis_b_local));
+				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_axis));
+				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Revolute));
+			}
+
+			// Pre-allocate gradient/hessian buffers (filled by eval shader at runtime)
+			const size_t num_joints = joint_data.constraint_indices.size();
+			joint_data.constraint_gradients.resize(num_joints * 8u, luisa::make_float3(0.f));
+			joint_data.constraint_hessians.resize(num_joints * 64u, luisa::make_float3x3(0.f));
+		}
+
 		// Init Energy Adjacent List
 		{
 			// num_variables_in_system
@@ -1122,6 +1338,10 @@ namespace lcs::Initializer
 			// Vert adj affine-body orthogonality
 			auto& abd_ortho_data = sim_data->get_abd_orthogonality_data();
 			build_adj_list_and_init_grad_hess(adj_map, abd_ortho_data);
+
+			// Vert adj joint constraints
+			auto& joint_data = sim_data->get_joint_constraint_data();
+			build_adj_list_and_init_grad_hess(adj_map, joint_data);
 
 			// Sort adjacents
 			CpuParallel::parallel_for(0,
@@ -1343,6 +1563,10 @@ namespace lcs::Initializer
 			// Soft body inertia & ground collision data
 			auto& soft_inertia_data = sim_data->get_soft_inertia_data();
 			init_constitution_offsets_in_adjlist(adj_list, csr, soft_inertia_data);
+
+			// Joint constraint data
+			auto& joint_data = sim_data->get_joint_constraint_data();
+			init_constitution_offsets_in_adjlist(adj_list, csr, joint_data);
 		}
 	}
 
@@ -1504,6 +1728,31 @@ namespace lcs::Initializer
 				   << upload_buffer(device, abd_ortho_O.constraint_hessians, abd_ortho_I.constraint_hessians)
 				   << upload_buffer(device, abd_ortho_O.vert_adj_constraints_csr, abd_ortho_I.vert_adj_constraints_csr);
 		}
+
+		auto& joint_I = input_data->get_joint_constraint_data();
+		auto& joint_O = output_data->get_joint_constraint_data();
+		if (joint_I.is_valid())
+		{
+			stream
+				<< upload_buffer(device, joint_O.constraint_indices, joint_I.constraint_indices)
+				<< upload_buffer(device, joint_O.anchor_a_local, joint_I.anchor_a_local)
+				<< upload_buffer(device, joint_O.anchor_b_local, joint_I.anchor_b_local)
+				<< upload_buffer(device, joint_O.rest_position_delta, joint_I.rest_position_delta)
+				<< upload_buffer(device, joint_O.rest_rot_col0_a_to_b, joint_I.rest_rot_col0_a_to_b)
+				<< upload_buffer(device, joint_O.rest_rot_col1_a_to_b, joint_I.rest_rot_col1_a_to_b)
+				<< upload_buffer(device, joint_O.rest_rot_col2_a_to_b, joint_I.rest_rot_col2_a_to_b)
+				<< upload_buffer(device, joint_O.axis_world, joint_I.axis_world)
+				<< upload_buffer(device, joint_O.axis_a_local, joint_I.axis_a_local)
+				<< upload_buffer(device, joint_O.axis_b_local, joint_I.axis_b_local)
+				<< upload_buffer(device, joint_O.stiffness, joint_I.stiffness)
+				<< upload_buffer(device, joint_O.joint_type, joint_I.joint_type)
+				<< upload_buffer(device, joint_O.slide_limits, joint_I.slide_limits)
+				<< upload_buffer(device, joint_O.constraint_gradients, joint_I.constraint_gradients)
+				<< upload_buffer(device, joint_O.constraint_hessians, joint_I.constraint_hessians)
+				<< upload_buffer(device, joint_O.constraint_offsets_in_adjlist, joint_I.constraint_offsets_in_adjlist)
+				<< upload_buffer(device, joint_O.vert_adj_constraints_csr, joint_I.vert_adj_constraints_csr);
+		}
+
 		stream << upload_buffer(device,
 			output_data->sa_vert_affine_bodies_id,
 			input_data->sa_vert_affine_bodies_id); // Basic information

@@ -1,3 +1,4 @@
+from utils.test_script_path import PROJECT_ROOT
 """
 test_tet_simulation.py
 ======================
@@ -13,13 +14,10 @@ drops it under gravity onto the floor and runs N frames.
 """
 import argparse
 import os
-import sys
 
 import numpy as np
 
 # -- locate the built lcs_py module ----------------------------------------
-root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
-sys.path.insert(0, os.path.join(root, 'build', 'bin'))
 import lcs_py as lcs
 
 
@@ -51,7 +49,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Tet simulation smoke test")
     default_backend = "metal" if platform.system() == "Darwin" else "cuda"
     p.add_argument("--backend", default=default_backend,
-                   choices=["cuda", "dx", "vk", "metal"])
+                   choices=["cuda", "dx", "metal", "vk", "fallback", "cpu", "remote"])
     p.add_argument("--advance_frames", type=int, default=30)
     p.add_argument("--mesh", default="grid_10x10x20", choices=["single", "cube", "grid_10x10x20"],
                    help="Tet mesh to test: a single tetrahedron or a 5-tet cube")
@@ -192,26 +190,36 @@ def main():
     reg_spring = solver.register_world_data(tet_spring)
     # print(f"Registered tet_spring with id={reg_spring}, fixed vertices={spring_fixed_vids}")
 
-    # ARAP body to compare with spring benchmark
+    # ARAP body
     tet_arap = solver.create_world_data_from_tet_array("tet_arap", verts, tets)
     tet_arap.set_physics_material_tet(
         model="ARAP",
-        youngs_modulus=1e5,
+        youngs_modulus=1e4,
         poisson_ratio=0.4,
     )
     tet_arap.set_translation(0.1, 0.0, 0.0)
     tet_arap.set_scale(0.2)
     tet_arap.add_fixed_point_by_method("Left")
-    arap_fixed_vids = tet_arap.get_fixed_point_indices()
     reg_arap = solver.register_world_data(tet_arap)
-    print(f"Registered tet_arap with id={reg_arap}, fixed vertices={arap_fixed_vids}")
+
+    # SNHK body 
+    tet_snhk = solver.create_world_data_from_tet_array("tet_snhk", verts, tets)
+    tet_snhk.set_physics_material_tet(
+        model="StableNeoHookean",
+        youngs_modulus=1e4,
+        poisson_ratio=0.4,
+    )
+    tet_snhk.set_translation(0.0, 0.0, 0.1)
+    tet_snhk.set_scale(0.2)
+    tet_snhk.add_fixed_point_by_method("Left")
+    reg_snhk = solver.register_world_data(tet_snhk)
 
     # ---- Initialize solver -----------------------------------------------
     solver.init_solver()
     print("Solver initialized.")
 
     # ---- Headless run -------------------------------------------------------
-    output_dir = os.path.join(root, "Resources", "OutputMesh")
+    output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")
     os.makedirs(output_dir, exist_ok=True)
 
     if args.headless:

@@ -39,12 +39,18 @@ LuisaComputeSimulator is a **high-performance cross-platform physics simulator**
 - ✅ Continuous Collision Detection (CCD)
 - ✅ Fixed Point / Pinned Constraints
 - ✅ Tetrahedral Mesh (In Development)
-- 🔄 Joint Constraints (Planned)
+- ✅ Joint Constraints (Fixed, Prismatic, Revolute)
 - 🔄 OpenUSD Scene Support
 
 ## Usage
 
-### Python Frontend
+- **You can build with Cmake:**  
+  - Configure: ```cmake -S . -B build```
+    - Optionally, you can specify your favorite generators, compilers, or build types by adding parameters `-G Ninja -D CMAKE_C_COMPILER=clang-15 -D CMAKE_CXX_COMPILER=clang++-15 -D CMAKE_BUILD_TYPE=Release`. 
+    - Or you can specify the compiler path using `-D CMAKE_C_COMPILER=/usr/bin/gcc-13, -D CMAKE_CXX_COMPILER=/usr/bin/g++-13`.
+    - We have tested our example on [clang 18.1.8](https://github.com/llvm/llvm-project/releases/tag/llvmorg-18.1.8), you can click the link for downloading the binary release and set `-D CMAKE_C_COMPILER=path_to_pachakge/bin/clang` (and `clang++` path) for confuguration.
+    - You can also enable/disable computing backends by adding `-D LUISA_COMPUTE_ENABLE_VULKAN=ON`.
+  - Build   : ```cmake --build build -j```
 
 Sample Python-frontend code can be found at:
 
@@ -57,6 +63,10 @@ Sample Python-frontend code can be found at:
     import sys
     import trimesh
     import numpy as np
+
+- **Run the application:**  
+    `build/bin/app-simulation <backend-name> <scene-json-file>` (Linux/macOS)  
+    `build\bin\app-simulation.exe  <backend-name> <scene-json-file>` (Windows)
 
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
     sys.path.insert(0, os.path.join(root, "build", "bin"))
@@ -218,14 +228,42 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
+With Python bindings (CMake):
+
+```bash
+# One-time: create venv and install tooling
+python3 -m venv .venv && source .venv/bin/activate
+pip3 install scikit-build-core pybind11 ninja numpy pybind11-stubgen trimesh
+
+# Configure + build + stubs
+cmake -S . -B build -DLCS_BUILD_PYBINDINGS=ON -DLCS_PYTHON_EXECUTABLE="$(pwd)/.venv/bin/python"
+cmake --build build -j --target stubs
+
+# Editable install
+pip3 install -e .
+
+# Run tests
+python PythonBindings/tests/test_rigid_joint_animation.py --headless --advance_frames 30
+```
+
 You can also use Xmake:
 
 ```bash
 # Clone dependencies
 xmake lua setup.lua
 # Configure (platform-specific)
-xmake f -m release 
+xmake f -m release
 xmake build
+```
+
+Or with Python bindings:
+
+```bash
+xmake f -m release --lcs_build_pybindings=y --lcs_python_executable=/path/to/python
+xmake build lcs_py
+
+# Run tests
+PYTHONPATH=build/bin python PythonBindings/tests/test_rigid_joint_animation.py --headless --advance_frames 30
 ```
 
 ### 2. Run a Demo
@@ -298,10 +336,10 @@ More compiling details can be found at [BUILD.md](/Document/Build.md)
 - [x] Affine Body Dynamics
 - [x] Frictional Modeling
 - [x] C++ Integration API
+- [x] Joint Constraints (Fixed, Prismatic, Revolute)
 
 ### In Progress 🔄
 - [ ] Tetrahedral Mesh Support
-- [ ] Joint Constraints
 
 ### Planned 📋
 - [ ] UV Mapping Package

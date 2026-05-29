@@ -1,3 +1,4 @@
+from utils.test_script_path import PROJECT_ROOT
 """
 Compare cloth stretch models (FEM_BW98 vs Spring) under symmetric pulling.
 
@@ -8,19 +9,16 @@ sides frame-by-frame via update_per_vertex_animation.
 
 import argparse
 import os
-import sys
 from typing import Dict
 
 import numpy as np
 
-root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-sys.path.insert(0, os.path.join(root, "build", "bin"))
 import lcs_py as lcs
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Cloth stretch model comparison test")
-    parser.add_argument("--backend", type=str, default="metal", choices=["metal", "cuda", "dx", "vk"])
+    parser.add_argument("--backend", type=str, default="metal", choices=["cuda", "dx", "metal", "vk", "fallback", "cpu", "remote"])
     parser.add_argument("--advance_frames", type=int, default=40)
     parser.add_argument("--headless", action="store_true")
     return parser.parse_args()
@@ -225,7 +223,7 @@ def test_cloth_stretching_models(backend: str = "metal", advance_frames: int = 4
     config.gravity = lcs.Float3(0.0, 0.0, 0.0)
     config.implicit_dt = 0.01
 
-    output_dir = os.path.join(root, "Resources", "OutputMesh")
+    output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")
     os.makedirs(output_dir, exist_ok=True)
 
     solver.init_solver()
@@ -315,7 +313,7 @@ def test_cloth_stretching_models(backend: str = "metal", advance_frames: int = 4
     )
     
 
-    output_dir = os.path.join(root, "Resources", "OutputMesh")
+    output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")
     os.makedirs(output_dir, exist_ok=True)
     np.save(os.path.join(output_dir, "cloth_fem_bw98_vertices.npy"), fem_verts)
     np.save(os.path.join(output_dir, "cloth_spring_vertices.npy"), spring_verts)

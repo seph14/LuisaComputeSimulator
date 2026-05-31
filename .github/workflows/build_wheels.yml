@@ -1,14 +1,7 @@
 name: build-wheels
 
 on:
-  push:
-    branches:
-      - stable
-      - stable-staging
   pull_request:
-    branches:
-      - stable
-      - stable-staging
 
 env:
   CIBW_ARCHS: auto64

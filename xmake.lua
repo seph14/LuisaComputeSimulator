@@ -322,6 +322,7 @@ if cfg_bool(false, "lcs_build_pybindings") then
 
             os.cp(path.join(src_dir, "python", "lcs_gui", "__init__.py"), gui_dir)
             os.cp(path.join(src_dir, "tests", "utils", "polyscope_gui.py"), gui_dir)
+            os.cp(path.join(src_dir, "tests", "utils", "mesh_proc.py"), gui_dir)
 
             cprint("${bright green}lcs_gui Python files copied to: ${bright cyan}%s", gui_dir)
         end)

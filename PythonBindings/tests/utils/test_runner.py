@@ -22,8 +22,43 @@ Usage::
 """
 
 import os
+import argparse
+import platform
 
 
+# ---------------------------------------------------------------------------
+# Shared argument parser factory
+# ---------------------------------------------------------------------------
+def create_default_parser() -> argparse.ArgumentParser:
+    """Return an ArgumentParser pre-populated with the standard CLI flags.
+
+    Callers may add further arguments before calling ``parser.parse_args()``.
+    """
+    DEFAULT_BACKEND = "metal" if platform.system() == "Darwin" else "cuda"
+    parser = argparse.ArgumentParser(description="LuisaCompute Python example")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default=DEFAULT_BACKEND,
+        choices=["cuda", "dx", "metal", "vk", "fallback", "cpu", "remote"],
+        help=f"Compute backend (default: {DEFAULT_BACKEND})",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without GUI",
+    )
+    parser.add_argument(
+        "--advance_frames",
+        type=int,
+        default=30,
+        help="Number of simulation frames to advance in headless mode (default: 30)",
+    )
+    return parser
+
+# ---------------------------------------------------------------------------
+# Example usage in test scripts (see test_cloth_animation.py, test_load_from_json.py, test_rigid_folding.py)
+# ---------------------------------------------------------------------------
 class TestRunner:
     """Headless / GUI execution loop that delegates to ``on_pre_step`` / ``on_post_step``.
 
@@ -134,7 +169,7 @@ class TestRunner:
 
         class _GUISubclass(utils.polyscope_gui.SimulationGUI):
             def _physics_step(self):
-                frame = int(self._config.current_frame)
+                frame = int(self._config.get_current_frame())
                 outer.on_pre_step(frame)
                 super()._physics_step()
                 outer.on_post_step(frame)
@@ -157,3 +192,4 @@ class TestRunner:
             self.run_headless(advance_frames)
         else:
             self.run_gui()
+

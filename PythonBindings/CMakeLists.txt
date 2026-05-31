@@ -50,6 +50,7 @@ install(FILES
 )
 install(FILES
     ${CMAKE_SOURCE_DIR}/PythonBindings/tests/utils/polyscope_gui.py
+    ${CMAKE_SOURCE_DIR}/PythonBindings/tests/utils/mesh_proc.py
     DESTINATION lcs_gui
 )
 

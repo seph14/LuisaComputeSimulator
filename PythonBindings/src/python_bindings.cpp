@@ -1068,6 +1068,7 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("get_stream_ptr", &PyNewtonBuilder::get_stream_ptr, "Return the raw pointer (as int) to the active luisa::compute::Stream.")
 		.def("get_config",
 			&PyNewtonBuilder::get_config,
+			py::keep_alive<0, 1>(),
 			"Return reference to solver-owned SceneParams config")
 		.def("init_solver", &PyNewtonBuilder::init_solver, "Initialize the underlying solver using the device set via init_device()/set_device()")
 		.def("physics_step_cpu", &PyNewtonBuilder::physics_step_cpu, "Advance one simulation frame using the CPU solver path.")
@@ -1213,6 +1214,7 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("update_dt", &PySceneParams::update_dt, py::arg("dt"), "Update the frame time step and derived substep time step.")
 		.def("get_substep_dt", &PySceneParams::get_substep_dt, "Return the current substep time step.")
 		.def("get_bending_stiffness_scaling", &PySceneParams::get_bending_stiffness_scaling, "Return the bending stiffness scaling factor for current settings.");
+	m.attr("PySceneParams") = m.attr("SceneParams");
 
 	m.doc() = "Python bindings for basic NewtonSolver scene building (lightweight)";
 }

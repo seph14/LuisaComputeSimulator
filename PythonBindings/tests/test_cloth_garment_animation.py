@@ -125,7 +125,7 @@ from utils.test_runner import TestRunner
 class GarmentAnimationTest(TestRunner):
     def on_pre_step(self, _frame_idx):
         for animator in animators:
-            if isinstance(animator, (SMPLAnimator, BodyAnimator)):
+            if isinstance(animator, (VertexAnimator, BodyAnimator)):
                 animator.update_animation(self.solver, self.config.get_current_frame(), self.config.get_implicit_dt())
             elif isinstance(animator, SMPLSequenceAnimator):
                 animator.update_animation(self.solver, self.config.get_current_frame(), self.config.get_implicit_dt())

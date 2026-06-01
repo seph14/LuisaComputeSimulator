@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core/float_n.h"
+#include <cstdint>
 #include <memory>
 
 namespace lcs
@@ -11,6 +12,14 @@ namespace lcs
 		SolverTypeNewton,
 		SolverTypeXPBD,
 		SolverTypeVBD,
+	};
+
+	// Coordinate system up-axis convention (ROADMAP 0.1).
+	// Z_UP is the robotics standard (Newton, MuJoCo, IsaacSim).
+	enum class UpAxis : uint32_t
+	{
+		Y_UP = 0, // legacy: gravity = (0, -9.8, 0), floor at y = 0
+		Z_UP = 1, // robotics: gravity = (0, 0, -9.8), floor at z = 0
 	};
 
 	struct SceneParams
@@ -81,10 +90,28 @@ namespace lcs
 		// Thickness & Friction
 		float d_hat = 1e-3f;
 
+		// Coordinate system
+		UpAxis up_axis = UpAxis::Y_UP; // default backward-compatible
 		lcs::float3 gravity{ 0, -9.8f, 0 };
 		lcs::float3 floor{ 0, 0, 0 };
 
 		SceneParams() {}
+
+		// Set up-axis and auto-derive gravity / floor defaults (ROADMAP 0.1).
+		void set_up_axis(UpAxis axis)
+		{
+			up_axis = axis;
+			if (axis == UpAxis::Z_UP)
+			{
+				gravity = lcs::float3{0.0f, 0.0f, -9.8f};
+				floor   = lcs::float3{0.0f, 0.0f, 0.0f};
+			}
+			else
+			{
+				gravity = lcs::float3{0.0f, -9.8f, 0.0f};
+				floor   = lcs::float3{0.0f, 0.0f, 0.0f};
+			}
+		}
 
 		void update_dt(const float input_dt)
 		{

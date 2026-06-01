@@ -1,0 +1,17 @@
+{
+    "version": "1.0",
+    "file_records": [
+        {
+            "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/IsaacLab/Robots/Unitree/H1/h1_minimal.usd",
+            "source_hash": "93d609f58c6aa6cfb659d907f5ecfc6734bb294c",
+            "target_url": "./h1_minimal.usd",
+            "target_hash": "d020668fd36ce69defdec61905f0bbdf3ffebd26"
+        },
+        {
+            "source_url": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/IsaacLab/Robots/Unitree/H1/instanceable_meshes.usd",
+            "source_hash": "62e3000ec80518a9b3d2c75c30c8977d36c43887",
+            "target_url": "./instanceable_meshes.usd",
+            "target_hash": "f40f13229f627931fcd8e4e04592842d7d0d8b48"
+        }
+    ]
+}

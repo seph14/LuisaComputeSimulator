@@ -686,6 +686,91 @@ namespace lcs::Initializer
 						sim_data->sa_q_property[dof_idx + 3].set_is_fixed();
 					}
 				}
+
+				// Assign one collision group per joint-connected rigid articulation.
+				// Group id 0 means no filtering; matching non-zero groups skip self-collision.
+				{
+					std::vector<uint> parent(world_data.size());
+					std::iota(parent.begin(), parent.end(), 0u);
+					std::vector<uint> rank(world_data.size(), 0u);
+					std::vector<uint> has_joint(world_data.size(), 0u);
+
+					auto find_root = [&](uint x)
+					{
+						uint root = x;
+						while (parent[root] != root)
+						{
+							root = parent[root];
+						}
+						while (parent[x] != x)
+						{
+							const uint next = parent[x];
+							parent[x] = root;
+							x = next;
+						}
+						return root;
+					};
+
+					auto union_meshes = [&](uint a, uint b)
+					{
+						a = find_root(a);
+						b = find_root(b);
+						if (a == b)
+							return;
+						if (rank[a] < rank[b])
+							std::swap(a, b);
+						parent[b] = a;
+						has_joint[a] = has_joint[a] | has_joint[b];
+						if (rank[a] == rank[b])
+							rank[a] += 1u;
+					};
+
+					auto registration_to_sorted_rigid = [&](uint registration_id, uint& sorted_idx) -> bool
+					{
+						if (registration_id >= mesh_data->input_to_sorted_mesh_id.size())
+							return false;
+						sorted_idx = mesh_data->input_to_sorted_mesh_id[registration_id];
+						return sorted_idx < world_data.size() && world_data[sorted_idx].holds<Material::RigidMaterial>();
+					};
+
+					auto mark_joint_pair = [&](uint registration_a, uint registration_b)
+					{
+						uint sorted_a = 0u;
+						uint sorted_b = 0u;
+						if (!registration_to_sorted_rigid(registration_a, sorted_a) || !registration_to_sorted_rigid(registration_b, sorted_b))
+							return;
+						has_joint[find_root(sorted_a)] = 1u;
+						has_joint[find_root(sorted_b)] = 1u;
+						union_meshes(sorted_a, sorted_b);
+					};
+
+					for (const auto& desc : fixed_joint_descs)
+						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
+					for (const auto& desc : prismatic_joint_descs)
+						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
+					for (const auto& desc : revolute_joint_descs)
+						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
+
+					std::vector<uint> root_to_group(world_data.size(), 0u);
+					uint			  next_group_id = 1u;
+					for (uint mesh_idx = 0u; mesh_idx < world_data.size(); ++mesh_idx)
+					{
+						if (!world_data[mesh_idx].holds<Material::RigidMaterial>())
+							continue;
+						const uint root = find_root(mesh_idx);
+						if (!has_joint[root])
+							continue;
+						if (root_to_group[root] == 0u)
+							root_to_group[root] = next_group_id++;
+						const uint group_id = root_to_group[root];
+						const uint prefix_vid = mesh_data->prefix_num_verts[mesh_idx];
+						const uint suffix_vid = mesh_data->prefix_num_verts[mesh_idx + 1];
+						for (uint vid = prefix_vid; vid < suffix_vid; ++vid)
+						{
+							sim_data->sa_x_property[vid].set_collision_group_id(group_id);
+						}
+					}
+				}
 			}
 		}
 

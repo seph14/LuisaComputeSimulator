@@ -337,7 +337,8 @@ namespace lcs // CCD
 		return (left->is_fixed() & right->is_fixed())			  // Both fixed
 			| (left->is_rigid_body() & right->is_rigid_body()	  // Both from rigid body
 				& left->get_object_id() == right->get_object_id() // 	and from the same rigid body
-			);
+				)
+			| left->has_same_collision_group(right);
 	}
 
 	void NarrowPhasesDetector::compile_ccd(AsyncCompiler& compiler)

@@ -1,13 +1,12 @@
 from utils.test_script_path import PROJECT_ROOT
 import argparse
-import trimesh
 import numpy as np
 import os, sys
 
 import lcs_py as lcs
 
-import utils.arg_parser
-args = utils.arg_parser.parse_args()
+from run_tests import create_default_parser
+args = create_default_parser().parse_args()
 
 # Initialize LuisaCompute device
 import platform
@@ -19,8 +18,7 @@ solver.init_device(backend_name=backend)
 
 # Load a mesh by providing vertices and triangles array directly
 rigid_mesh_path = os.path.join(PROJECT_ROOT, 'Resources', 'InputMesh', 'sphere63.obj')
-rigid_mesh = trimesh.load(rigid_mesh_path, process=False)
-rigid = solver.create_world_data_from_array('cube', rigid_mesh.vertices, rigid_mesh.faces)
+rigid = solver.create_world_data_from_file_path('cube', rigid_mesh_path)
 rigid.set_simulation_type(lcs.MaterialType.Rigid)
 rigid.set_translation(0.0, 0.34, 0.0)
 rigid.set_rotation(0.5235988, 0.0, 0.5235988)
@@ -62,21 +60,15 @@ solver.print_registered_meshes_info()
 
 # Set scene parameters
 config_ref = solver.get_config()
-config_ref.use_floor = False
+config_ref.set_use_floor(False)
 
 # Output directory (for optional file saving)
 output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")
 os.makedirs(output_dir, exist_ok=True)
 
 # Launch polyscope GUI or run headless
-if args.headless:
-	solver.save_sim_result(obj_path=os.path.join(output_dir, "init.obj"))
-	for frame in range(0, args.advance_frames):
-		solver.physics_step_gpu()
-	solver.save_sim_result(obj_path=os.path.join(output_dir, "result.obj"))
-else:
-	import utils.polyscope_gui 
-	gui = utils.polyscope_gui.SimulationGUI(solver, config_ref, output_dir)
-	gui.show()
+from utils.test_runner import TestRunner
+runner = TestRunner(solver, config_ref, output_dir, headless=args.headless)
+runner.run(advance_frames=args.advance_frames)
 
 solver.cleanup_device()

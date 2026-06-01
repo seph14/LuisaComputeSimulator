@@ -3,8 +3,8 @@ import os, sys
 
 import lcs_py as lcs
 
-import utils.arg_parser
-args = utils.arg_parser.parse_args()
+from run_tests import create_default_parser
+args = create_default_parser().parse_args()
 
 # Initialize LuisaCompute device
 backend = args.backend  # backends: cuda, dx, vk, metal (if supported on the platform)
@@ -51,10 +51,10 @@ solver.init_solver()
 
 # Set scene parameters
 config_ref = solver.get_config()
-config_ref.nonlinear_iter_count = 1
-config_ref.pcg_iter_count = 50
-config_ref.gravity = lcs.Float3(0.0, 0.0, 0.0)
-config_ref.use_floor = False
+config_ref.set_nonlinear_iter_count(1)
+config_ref.set_pcg_iter_count(50)
+config_ref.set_gravity(lcs.Float3(0.0, 0.0, 0.0))
+config_ref.set_use_floor(False)
 # config_ref.use_self_collision = False
 # config_ref.contact_energy_type = 0
 
@@ -62,28 +62,15 @@ config_ref.use_floor = False
 output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")
 os.makedirs(output_dir, exist_ok=True)
 
-# Launch polyscope GUI or run headless
-def update_animation():
-	animator.update_animation(solver, config_ref.current_frame, config_ref.implicit_dt)
+from utils.test_runner import TestRunner
 
-if args.headless:
-	solver.save_sim_result(obj_path=os.path.join(output_dir, "init.obj"))
-	for _ in range(0, args.advance_frames):
-		update_animation()
-		if config_ref.use_gpu:
-			solver.physics_step_gpu()
-		else:
-			solver.physics_step_cpu()
-	solver.save_sim_result(obj_path=os.path.join(output_dir, "result.obj"))
-else:
-	import utils.polyscope_gui
 
-	class AnimatedSimulationGUI(utils.polyscope_gui.SimulationGUI):
-		def _physics_step(self):
-			update_animation()
-			super()._physics_step()
+class ClothAnimationTest(TestRunner):
+    def on_pre_step(self, _frame_idx):
+        animator.update_animation(self.solver, self.config.get_current_frame(), self.config.get_implicit_dt())
 
-	gui = AnimatedSimulationGUI(solver, config_ref, output_dir)
-	gui.show()
+
+runner = ClothAnimationTest(solver, config_ref, output_dir, headless=args.headless)
+runner.run(advance_frames=args.advance_frames)
 
 solver.cleanup_device()

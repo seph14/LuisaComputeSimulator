@@ -7,20 +7,18 @@ cloth objects with different stretch models, and pulls two fixed points to oppos
 sides frame-by-frame via update_per_vertex_animation.
 """
 
-import argparse
 import os
 from typing import Dict
 
 import numpy as np
 
 import lcs_py as lcs
+from run_tests import create_default_parser
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Cloth stretch model comparison test")
-    parser.add_argument("--backend", type=str, default="metal", choices=["cuda", "dx", "metal", "vk", "fallback", "cpu", "remote"])
-    parser.add_argument("--advance_frames", type=int, default=40)
-    parser.add_argument("--headless", action="store_true")
+    parser = create_default_parser()
+    parser.set_defaults(advance_frames=40)
     return parser.parse_args()
 
 def get_fixed_indices():
@@ -214,14 +212,14 @@ def test_cloth_stretching_models(backend: str = "metal", advance_frames: int = 4
     spring_id, spring_rest = register_cloth_object(solver, "cloth_spring", "Spring", z_offset=0.25)
 
     config = solver.get_config()
-    config.use_floor = False
-    config.use_self_collision = False
-    config.nonlinear_iter_count = 1
-    config.pcg_iter_count = 50
-    config.use_ccd_linesearch = False
-    config.use_gpu = False
-    config.gravity = lcs.Float3(0.0, 0.0, 0.0)
-    config.implicit_dt = 0.01
+    config.set_use_floor(False)
+    config.set_use_self_collision(False)
+    config.set_nonlinear_iter_count(1)
+    config.set_pcg_iter_count(50)
+    config.set_use_ccd_linesearch(False)
+    config.set_use_gpu(False)
+    config.set_gravity(lcs.Float3(0.0, 0.0, 0.0))
+    config.set_implicit_dt(0.01)
 
     output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")
     os.makedirs(output_dir, exist_ok=True)
@@ -244,22 +242,19 @@ def test_cloth_stretching_models(backend: str = "metal", advance_frames: int = 4
 
     pull_speed = 10.0
 
-    if headless:
-        for frame in range(advance_frames):
-            apply_fixed_point_stretch(solver, fem_id, fem_rest, frame, config.implicit_dt, fixed_dict, pull_speed)
-            apply_fixed_point_stretch(solver, spring_id, spring_rest, frame, config.implicit_dt, fixed_dict, pull_speed)
-            solver.physics_step_gpu()
-        solver.save_sim_result(obj_path=os.path.join(output_dir, "result.obj"))
-    else:
-        import utils.polyscope_gui
-        class AnimatedSimulationGUI(utils.polyscope_gui.SimulationGUI):
-            def _physics_step(self):
-                frame = config.current_frame
-                apply_fixed_point_stretch(solver, fem_id, fem_rest, frame, config.implicit_dt, fixed_dict, pull_speed)
-                apply_fixed_point_stretch(solver, spring_id, spring_rest, frame, config.implicit_dt, fixed_dict, pull_speed)
-                super()._physics_step()
-        gui = AnimatedSimulationGUI(solver, config, output_dir)
-        gui.show()
+    from utils.test_runner import TestRunner
+
+
+    class ClothStretchTest(TestRunner):
+        def on_pre_step(self, _frame_idx):
+            frame = self.config.get_current_frame()
+            dt = self.config.get_implicit_dt()
+            apply_fixed_point_stretch(self.solver, fem_id, fem_rest, frame, dt, fixed_dict, pull_speed)
+            apply_fixed_point_stretch(self.solver, spring_id, spring_rest, frame, dt, fixed_dict, pull_speed)
+
+
+    runner = ClothStretchTest(solver, config, output_dir, headless=headless)
+    runner.run(advance_frames=advance_frames)
 
     fem_verts, _ = solver.get_object_sim_result_by_registration_id(fem_id)
     spring_verts, _ = solver.get_object_sim_result_by_registration_id(spring_id)

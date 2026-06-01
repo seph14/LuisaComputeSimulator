@@ -44,6 +44,16 @@ install(FILES ${CMAKE_SOURCE_DIR}/PythonBindings/python/lcs_py/__init__.pyi
     RENAME lcs_py.pyi
 )
 
+install(FILES
+    ${CMAKE_SOURCE_DIR}/PythonBindings/python/lcs_gui/__init__.py
+    DESTINATION lcs_gui
+)
+install(FILES
+    ${CMAKE_SOURCE_DIR}/PythonBindings/tests/utils/polyscope_gui.py
+    ${CMAKE_SOURCE_DIR}/PythonBindings/tests/utils/mesh_proc.py
+    DESTINATION lcs_gui
+)
+
 # ---------------------------------------------------------------------------
 # Bundle LuisaCompute runtime into the wheel
 # ---------------------------------------------------------------------------

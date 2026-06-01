@@ -312,6 +312,20 @@ if cfg_bool(false, "lcs_build_pybindings") then
                 end
             end
         end)
+
+        after_build(function(target)
+            local bindir = path.join(os.projectdir(), "build", "bin")
+            local gui_dir = path.join(bindir, "lcs_gui")
+            os.mkdir(gui_dir)
+
+            local src_dir = path.join(os.projectdir(), "PythonBindings")
+
+            os.cp(path.join(src_dir, "python", "lcs_gui", "__init__.py"), gui_dir)
+            os.cp(path.join(src_dir, "tests", "utils", "polyscope_gui.py"), gui_dir)
+            os.cp(path.join(src_dir, "tests", "utils", "mesh_proc.py"), gui_dir)
+
+            cprint("${bright green}lcs_gui Python files copied to: ${bright cyan}%s", gui_dir)
+        end)
     target_end()
 
     -- Stub generation target (equivalent to cmake --build build --target stubs)
@@ -341,6 +355,19 @@ if cfg_bool(false, "lcs_build_pybindings") then
             else
                 raise("pybind11_stubgen produced neither " .. single_stub .. " nor " .. package_init)
             end
+
+            -- Translate C++ wrapper type names back to Python class names.
+            -- pybind11-stubgen resolves the underlying C++ type (PySceneParams)
+            -- but the Python name registered with py::class_<> is SceneParams.
+            --
+            -- Mirror of PythonBindings/cmake/normalize_stub.cmake lines 38-51.
+            local stub_content = io.readfile(package_init)
+            local fixed, count = stub_content:gsub("PySceneParams", "SceneParams")
+            if count > 0 then
+                io.writefile(package_init, fixed)
+                print(string.format("Replaced PySceneParams -> SceneParams (%d occurrence(s))", count))
+            end
+
             print("Stubs generated to: " .. stubout)
         end)
     target_end()

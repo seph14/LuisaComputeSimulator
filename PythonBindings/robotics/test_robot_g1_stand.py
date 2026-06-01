@@ -47,7 +47,7 @@ cube = trimesh.load(os.path.join(PROJECT_ROOT, "Resources", "InputMesh", "cube.o
                     process=False)
 
 link_order = URDFParser.build_topology_order(model)
-for link_name in link_order:
+for i, link_name in enumerate(link_order):
     link = model.links.get(link_name)
     if link is None:
         continue
@@ -63,7 +63,7 @@ for link_name in link_order:
             scale = (r * 2, r * 2, l)
     is_fixed = (link_name == model.root_link)
     rs.add_rigid_body(link_name, cube.vertices, cube.faces,
-                      tx=0, ty=0, tz=1.0, sx=scale[0], sy=scale[1], sz=scale[2],
+                      tx=0, ty=0, tz=float(1.0 + i * 0.02), sx=scale[0], sy=scale[1], sz=scale[2],
                       fixed=is_fixed)
 
 n_joints = 0

@@ -380,6 +380,9 @@ struct PySceneParams
 	luisa::float3 get_floor() const { return params_ptr->floor; }
 	void		  set_floor(const luisa::float3& v) { params_ptr->floor = v; }
 
+	luisa::float3 get_floor_normal() const { return params_ptr->floor_normal; }
+	void		  set_floor_normal(const luisa::float3& v) { params_ptr->floor_normal = v; }
+
 	luisa::float3 get_gravity() const { return params_ptr->gravity; }
 	void		  set_gravity(const luisa::float3& v) { params_ptr->gravity = v; }
 
@@ -1336,6 +1339,8 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("get_explicit_dt", &PySceneParams::get_explicit_dt)
 		.def("set_floor", &PySceneParams::set_floor, py::arg("v"))
 		.def("get_floor", &PySceneParams::get_floor)
+		.def("set_floor_normal", &PySceneParams::set_floor_normal, py::arg("v"))
+		.def("get_floor_normal", &PySceneParams::get_floor_normal)
 		.def("set_up_axis", &PySceneParams::set_up_axis, py::arg("v"))
 		.def("get_up_axis", &PySceneParams::get_up_axis)
 		.def("set_gravity", &PySceneParams::set_gravity, py::arg("v"))

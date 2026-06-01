@@ -14,6 +14,7 @@ from robotics import mesh
 from robotics import render
 from robotics import training
 from robotics import utils
+from robotics import parser
 
 # Convenience imports for ROADMAP-compliant scripting
 from robotics.utils.robot_sim_runner import simulate, simulate_with_render

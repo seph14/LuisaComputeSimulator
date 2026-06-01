@@ -52,10 +52,37 @@ class RobotSolver:
                        tx=0.0, ty=0.0, tz=0.0,
                        sx=1.0, sy=1.0, sz=1.0,
                        rx=0.0, ry=0.0, rz=0.0,
-                       fixed=False):
+                       fixed=False,
+                       mass=None, com=None, density=None):
+        """
+        Add a rigid body with optional mass/COM/inertia overrides (ROADMAP B.1).
+
+        Args:
+            mass: Override computed mass (kg).
+            com: Center of mass offset (3-vector) in body-local frame.
+            density: Material density override (kg/m³).
+        """
         body = self._solver.create_world_data_from_array(
             name, mesh_vertices, mesh_faces)
         body.set_simulation_type(lcs.MaterialType.Rigid)
+
+        # Apply mass/COM/density overrides if provided
+        if mass is not None or com is not None or density is not None:
+            # Use set_physics_material_rigid with custom parameters
+            model = "stable_neohookean"  # default rigid model
+            thickness = 0.001
+            stiffness = 1e8
+            d_hat = 0.001
+            contact_offset = 0.0
+            if density is None:
+                density = 1000.0  # default
+            if mass is not None:
+                density = 0.0  # explicit mass overrides density
+            body.set_physics_material_rigid(
+                model, thickness, stiffness, density,
+                mass if mass is not None else 1.0,
+                d_hat, contact_offset)
+
         body.set_translation(tx, ty, tz)
         body.set_rotation(rx, ry, rz)
         body.set_scale_xyz(sx, sy, sz)

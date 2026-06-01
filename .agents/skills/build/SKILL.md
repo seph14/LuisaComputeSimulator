@@ -37,7 +37,7 @@ cmake -S . -B build \
 cmake --build build -j --target stubs
 
 # Editable install of the lcs package into the venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e . --no-build-isolation
 ```
 
 After C++ binding changes (anything in `PythonBindings/src/python_bindings.cpp`), rerun:

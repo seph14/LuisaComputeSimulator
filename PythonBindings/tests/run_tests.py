@@ -45,6 +45,7 @@ TESTS = [
     "test_rigid_folding.py",
     "test_rigid_joint_animation.py",
     "test_rigid_joint_animation2.py",
+    "../robotics/test_cartpole.py",
     "test_soft_folding.py",
     "test_tet_drop.py",
     "test_tet_unit.py",
@@ -88,7 +89,7 @@ def _run_batch() -> int:
     start_all = time.time()
 
     for test_file in TESTS:
-        test_name = test_file.replace(".py", "")
+        test_name = Path(test_file).stem
         test_path = tests_dir / test_file
         out_dir = OUTPUT_ROOT / test_name
         out_dir.mkdir(parents=True, exist_ok=True)

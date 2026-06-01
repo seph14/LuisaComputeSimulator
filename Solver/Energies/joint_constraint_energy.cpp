@@ -96,6 +96,17 @@ namespace lcs
 						energy += 0.5f * stiff.x * (s - slims.y) * (s - slims.y);
 					};
 				}
+				$elif(jtype == static_cast<uint>(JointConstraintType::Ball))
+				{
+					// Ball joint: positional anchor coincidence only
+					Float3 r_pos_ball = (p_b - p_a);
+					energy = 0.5f * stiff.x * dot(r_pos_ball, r_pos_ball);
+				}
+				$elif(jtype == static_cast<uint>(JointConstraintType::Free))
+				{
+					// Free joint: no constraint energy
+					energy = 0.0f;
+				}
 				$else
 				{
 					// Revolute (with angle limit penalty)
@@ -249,6 +260,32 @@ namespace lcs
 					for (uint i = 0; i < 8; ++i)
 						for (uint j = 0; j < 8; ++j)
 							joint.constraint_hessians->write(joint_idx * 64u + i * 8u + j, eval.hessians[i * 8 + j]);
+				}
+				$elif(jtype == static_cast<uint>(JointConstraintType::Ball))
+				{
+					Float3 rp = q[0] + q[1] * anchor_a.x + q[2] * anchor_a.y + q[3] * anchor_a.z;
+					Float3 rp2 = q[4] + q[5] * anchor_b.x + q[6] * anchor_b.y + q[7] * anchor_b.z;
+					Float3 r_pos_ball = rp2 - rp;
+					Float3 f_ball = stiff.x * r_pos_ball;
+					Float3 gb[8];
+					gb[0] = -f_ball;
+					gb[1] = -anchor_a.x * f_ball; gb[2] = -anchor_a.y * f_ball; gb[3] = -anchor_a.z * f_ball;
+					gb[4] = f_ball;
+					gb[5] = anchor_b.x * f_ball; gb[6] = anchor_b.y * f_ball; gb[7] = anchor_b.z * f_ball;
+					for (uint bi = 0; bi < 8; ++bi)
+						joint.constraint_gradients->write(joint_idx * 8u + bi, gb[bi]);
+					for (uint bi = 0; bi < 8; ++bi)
+						for (uint bj = 0; bj < 8; ++bj)
+							joint.constraint_hessians->write(joint_idx * 64u + bi * 8u + bj,
+								outer_product(gb[bi], gb[bj]) / stiff.x);
+				}
+				$elif(jtype == static_cast<uint>(JointConstraintType::Free))
+				{
+					for (uint fi = 0; fi < 8; ++fi)
+						joint.constraint_gradients->write(joint_idx * 8u + fi, make_float3(0.0f));
+					for (uint fi = 0; fi < 8; ++fi)
+						for (uint fj = 0; fj < 8; ++fj)
+							joint.constraint_hessians->write(joint_idx * 64u + fi * 8u + fj, make_float3x3(0.0f));
 				}
 				$else
 				{
@@ -417,6 +454,37 @@ namespace lcs
 							for (uint j = 0; j < 8; ++j)
 								joint_data.constraint_hessians[joint_idx * 64u + i * 8u + j] = eval.hessians[i * 8 + j];
 					}
+					else if (jtype == static_cast<uint>(JointConstraintType::Ball))
+					{
+						// Ball joint: positional anchor coincidence
+						float3 rp = q[0] + q[1] * anchor_a.x + q[2] * anchor_a.y + q[3] * anchor_a.z;
+						float3 rp2 = q[4] + q[5] * anchor_b.x + q[6] * anchor_b.y + q[7] * anchor_b.z;
+						float3 r_pos_ball = rp2 - rp;
+						float3 f_ball = stiff.x * r_pos_ball;
+						float3 gb[8];
+						gb[0] = -f_ball;
+						gb[1] = -anchor_a.x * f_ball; gb[2] = -anchor_a.y * f_ball; gb[3] = -anchor_a.z * f_ball;
+						gb[4] = f_ball;
+						gb[5] = anchor_b.x * f_ball; gb[6] = anchor_b.y * f_ball; gb[7] = anchor_b.z * f_ball;
+						for (uint bi = 0; bi < 8; ++bi)
+							joint_data.constraint_gradients[joint_idx * 8u + bi] = gb[bi];
+						for (uint bi = 0; bi < 8; ++bi)
+							for (uint bj = 0; bj < 8; ++bj)
+							{
+								float3x3 outer;
+								for (int col = 0; col < 3; ++col)
+									outer[col] = gb[bi] * gb[bj][col];
+								joint_data.constraint_hessians[joint_idx * 64u + bi * 8u + bj] = outer / stiff.x;
+							}
+					}
+					else if (jtype == static_cast<uint>(JointConstraintType::Free))
+					{
+						for (uint fi = 0; fi < 8; ++fi)
+							joint_data.constraint_gradients[joint_idx * 8u + fi] = luisa::make_float3(0.0f);
+						for (uint fi = 0; fi < 8; ++fi)
+							for (uint fj = 0; fj < 8; ++fj)
+								joint_data.constraint_hessians[joint_idx * 64u + fi * 8u + fj] = luisa::make_float3x3(0.0f);
+					}
 					else
 					{
 						// Revolute
@@ -428,7 +496,6 @@ namespace lcs
 							for (uint j = 0; j < 8; ++j)
 								joint_data.constraint_hessians[joint_idx * 64u + i * 8u + j] = eval.hessians[i * 8 + j];
 					}
-
 					// ── Joint drive energy gradient (host path, ROADMAP 1.4) ───
 					if (joint_idx < joint_data.joint_drive_params.size())
 					{

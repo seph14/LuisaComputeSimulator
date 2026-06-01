@@ -31,6 +31,8 @@ class RobotSolver:
         """
         Configure solver for Z-up coordinate system (ROADMAP 0.1-0.2).
 
+        Uses SceneParams.set_up_axis(Z_UP) to auto-derive gravity/floor.
+
         Tuned defaults (ROADMAP 1.8):
           - dt = 1/300  (balanced accuracy/performance)
           - num_substep = 3  (joint stability)
@@ -38,7 +40,7 @@ class RobotSolver:
           - pcg_iter_count = 200
         """
         config = self.config
-        config.set_gravity(lcs.Float3(0.0, 0.0, -9.8))
+        config.set_up_axis(lcs.UpAxis.Z_UP)
         config.set_use_floor(False)
         config.set_use_self_collision(False)
         config.set_implicit_dt(dt)

@@ -383,6 +383,9 @@ struct PySceneParams
 	luisa::float3 get_gravity() const { return params_ptr->gravity; }
 	void		  set_gravity(const luisa::float3& v) { params_ptr->gravity = v; }
 
+	lcs::UpAxis get_up_axis() const { return params_ptr->up_axis; }
+	void		set_up_axis(lcs::UpAxis v) { params_ptr->set_up_axis(v); }
+
 	float get_stiffness_bending_ui() const { return params_ptr->stiffness_bending_ui; }
 	void  set_stiffness_bending_ui(float v) { params_ptr->stiffness_bending_ui = v; }
 
@@ -990,6 +993,10 @@ struct PyNewtonBuilder
 
 PYBIND11_MODULE(lcs_py, m)
 {
+	py::enum_<lcs::UpAxis>(m, "UpAxis")
+		.value("Y_UP", lcs::UpAxis::Y_UP)
+		.value("Z_UP", lcs::UpAxis::Z_UP);
+
 	py::enum_<lcs::Material::MaterialType>(m, "MaterialType")
 		.value("Particle", lcs::Material::MaterialType::Particle)
 		.value("Cloth", lcs::Material::MaterialType::Cloth)
@@ -1329,6 +1336,8 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("get_explicit_dt", &PySceneParams::get_explicit_dt)
 		.def("set_floor", &PySceneParams::set_floor, py::arg("v"))
 		.def("get_floor", &PySceneParams::get_floor)
+		.def("set_up_axis", &PySceneParams::set_up_axis, py::arg("v"))
+		.def("get_up_axis", &PySceneParams::get_up_axis)
 		.def("set_gravity", &PySceneParams::set_gravity, py::arg("v"))
 		.def("get_gravity", &PySceneParams::get_gravity)
 		.def("set_stiffness_bending_ui", &PySceneParams::set_stiffness_bending_ui, py::arg("v"))

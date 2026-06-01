@@ -205,10 +205,15 @@ namespace lcs::Initializer
 
 		static void check_primitive_pair(const std::vector<WorldData>& world_data,
 			const MeshData<std::vector>*							   mesh_data,
+			const SimulationData<std::vector>*						   sim_data,
 			const CpuBvhPrimitive&									   a,
 			const CpuBvhPrimitive&									   b)
 		{
 			if (a.face_id >= b.face_id || a.mesh_id == b.mesh_id || !overlaps_aabb(a.aabb, b.aabb))
+				return;
+			const uint a_prefix_vid = mesh_data->prefix_num_verts[a.mesh_id];
+			const uint b_prefix_vid = mesh_data->prefix_num_verts[b.mesh_id];
+			if (sim_data->sa_x_property[a_prefix_vid].has_same_collision_group(sim_data->sa_x_property[b_prefix_vid]))
 				return;
 			if (!triangles_overlap_or_touch(mesh_data, a.face_id, b.face_id))
 				return;
@@ -226,6 +231,7 @@ namespace lcs::Initializer
 
 		static void query_bvh_pair(const std::vector<WorldData>& world_data,
 			const MeshData<std::vector>*						 mesh_data,
+			const SimulationData<std::vector>*					 sim_data,
 			const CpuBvh&										 bvh,
 			const int											 node_a_idx,
 			const int											 node_b_idx)
@@ -241,7 +247,7 @@ namespace lcs::Initializer
 				{
 					for (uint j = node_b.begin; j < node_b.end; ++j)
 					{
-						check_primitive_pair(world_data, mesh_data, bvh.primitives[i], bvh.primitives[j]);
+						check_primitive_pair(world_data, mesh_data, sim_data, bvh.primitives[i], bvh.primitives[j]);
 					}
 				}
 				return;
@@ -251,34 +257,35 @@ namespace lcs::Initializer
 			{
 				if (!node_a.is_leaf())
 				{
-					query_bvh_pair(world_data, mesh_data, bvh, node_a.left, node_a.left);
-					query_bvh_pair(world_data, mesh_data, bvh, node_a.left, node_a.right);
-					query_bvh_pair(world_data, mesh_data, bvh, node_a.right, node_a.right);
+					query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.left, node_a.left);
+					query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.left, node_a.right);
+					query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.right, node_a.right);
 				}
 				return;
 			}
 
 			if (node_a.is_leaf())
 			{
-				query_bvh_pair(world_data, mesh_data, bvh, node_a_idx, node_b.left);
-				query_bvh_pair(world_data, mesh_data, bvh, node_a_idx, node_b.right);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a_idx, node_b.left);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a_idx, node_b.right);
 			}
 			else if (node_b.is_leaf())
 			{
-				query_bvh_pair(world_data, mesh_data, bvh, node_a.left, node_b_idx);
-				query_bvh_pair(world_data, mesh_data, bvh, node_a.right, node_b_idx);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.left, node_b_idx);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.right, node_b_idx);
 			}
 			else
 			{
-				query_bvh_pair(world_data, mesh_data, bvh, node_a.left, node_b.left);
-				query_bvh_pair(world_data, mesh_data, bvh, node_a.left, node_b.right);
-				query_bvh_pair(world_data, mesh_data, bvh, node_a.right, node_b.left);
-				query_bvh_pair(world_data, mesh_data, bvh, node_a.right, node_b.right);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.left, node_b.left);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.left, node_b.right);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.right, node_b.left);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, node_a.right, node_b.right);
 			}
 		}
 
 		static void validate_initial_mesh_overlaps(const std::vector<WorldData>& world_data,
 			const MeshData<std::vector>*										 mesh_data,
+			const SimulationData<std::vector>*									 sim_data,
 			const std::vector<uint>&											 surface_face_indices)
 		{
 			CpuBvh bvh;
@@ -297,7 +304,7 @@ namespace lcs::Initializer
 			bvh.build();
 			if (bvh.root >= 0)
 			{
-				query_bvh_pair(world_data, mesh_data, bvh, bvh.root, bvh.root);
+				query_bvh_pair(world_data, mesh_data, sim_data, bvh, bvh.root, bvh.root);
 			}
 		}
 	} // namespace
@@ -358,7 +365,7 @@ namespace lcs::Initializer
 		LUISA_INFO("Surface verts count = {} (Total verts = {})", num_surface_verts, mesh_data->num_verts);
 		LUISA_INFO("Surface edges count = {} (Total edges = {})", num_surface_edges, mesh_data->num_edges);
 		LUISA_INFO("Surface faces count = {} (Total faces = {})", num_surface_faces, mesh_data->num_faces);
-		validate_initial_mesh_overlaps(world_data, mesh_data, surface_face_indices);
+		validate_initial_mesh_overlaps(world_data, mesh_data, sim_data, surface_face_indices);
 		sim_data->sa_contact_active_verts.resize(num_surface_verts);
 		sim_data->sa_contact_active_edges.resize(num_surface_edges);
 		sim_data->sa_contact_active_faces.resize(num_surface_faces);

@@ -6,6 +6,7 @@
 #include "SimulationCore/joint_constraint.h"
 #include "SimulationCore/simulation_type.h"
 #include "Utils/buffer_allocator.h"
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <luisa/luisa-compute.h>
@@ -37,7 +38,7 @@ namespace lcs
 	struct VertexProperty
 	{
 	private:
-		void set_attribution(const uint bit, bool value)
+		void set_attribution(const uint64_t bit, bool value)
 		{
 			if (value)
 				attribute_info |= bit;
@@ -46,25 +47,47 @@ namespace lcs
 		}
 
 	public:
-		static constexpr uint flag_is_fixex = 1 << 0;
-		static constexpr uint flag_is_rigid_body = 1 << 1;
-		static constexpr uint flag_is_self_collision_disabled = 1 << 2;
-		static constexpr uint flag_is_ccd_disabled = 1 << 3;
-		static constexpr uint flag_is_friction_disabled = 1 << 4;
-		static constexpr uint flag_is_gravity_disabled = 1 << 5;
-		static constexpr uint flag_is_init_penetrated = 1 << 6;
+		//   bit  0      : is fixed
+		//   bit  1      : is rigid body vertex
+		//   bit  2      : self-collision disabled flag (reserved)
+		//   bit  3      : CCD disabled flag (reserved)
+		//   bit  4      : friction disabled flag (reserved)
+		//   bit  5      : gravity disabled flag (reserved)
+		//   bit  6      : initial penetration marker
+		//   bits 7..15  : reserved
+		//   bits 16..39 : object_id, usually the sorted mesh/object index
+		//   bits 40..63 : collision_group_id
+		// collision_group_id == 0 means no group filtering
+		// Matching non-zero collision_group_id values skip self-collision
+		static constexpr uint64_t flag_is_fixex = 1ull << 0;
+		static constexpr uint64_t flag_is_rigid_body = 1ull << 1;
+		static constexpr uint64_t flag_is_self_collision_disabled = 1ull << 2;
+		static constexpr uint64_t flag_is_ccd_disabled = 1ull << 3;
+		static constexpr uint64_t flag_is_friction_disabled = 1ull << 4;
+		static constexpr uint64_t flag_is_gravity_disabled = 1ull << 5;
+		static constexpr uint64_t flag_is_init_penetrated = 1ull << 6;
+		static constexpr uint64_t object_id_shift = 16ull;
+		static constexpr uint64_t object_id_mask = 0xFFFFFFull;
+		static constexpr uint64_t collision_group_id_shift = 40ull;
+		static constexpr uint64_t collision_group_id_mask = 0xFFFFFFull;
 
 	public:
-		uint attribute_info = 0;
-		bool is_fixed() const { return (attribute_info & flag_is_fixex) != 0; }
-		bool is_rigid_body() const { return (attribute_info & flag_is_rigid_body) != 0; }
-		bool is_soft_body() const { return (attribute_info & flag_is_rigid_body) == 0; }
+		uint64_t attribute_info = 0;
+		bool	 is_fixed() const { return (attribute_info & flag_is_fixex) != 0; }
+		bool	 is_rigid_body() const { return (attribute_info & flag_is_rigid_body) != 0; }
+		bool	 is_soft_body() const { return (attribute_info & flag_is_rigid_body) == 0; }
 		// bool is_self_collision_disabled() const { return (attribute_info & flag_is_self_collision_disabled) != 0; }
 		// bool is_ccd_disabled() const { return (attribute_info & flag_is_ccd_disabled) != 0; }
 		// bool is_friction_disabled() const { return (attribute_info & flag_is_friction_disabled) != 0; }
 		// bool is_gravity_disabled() const { return (attribute_info & flag_is_gravity_disabled) != 0; }
 		bool is_init_penetrated() const { return (attribute_info & flag_is_init_penetrated) != 0; }
-		uint get_object_id() const { return (attribute_info >> 16) & 0x7FFF; }
+		uint get_object_id() const { return static_cast<uint>((attribute_info >> object_id_shift) & object_id_mask); }
+		uint get_collision_group_id() const { return static_cast<uint>((attribute_info >> collision_group_id_shift) & collision_group_id_mask); }
+		bool has_same_collision_group(const VertexProperty& other) const
+		{
+			const uint group_id = get_collision_group_id();
+			return group_id != 0u && group_id == other.get_collision_group_id();
+		}
 
 	public:
 		void set_is_fixed()
@@ -105,7 +128,13 @@ namespace lcs
 		}
 		void set_object_id(const uint object_id)
 		{
-			attribute_info = (attribute_info & 0xFFFF) | ((object_id & 0x7FFF) << 16);
+			attribute_info = (attribute_info & ~(object_id_mask << object_id_shift))
+				| ((static_cast<uint64_t>(object_id) & object_id_mask) << object_id_shift);
+		}
+		void set_collision_group_id(const uint group_id)
+		{
+			attribute_info = (attribute_info & ~(collision_group_id_mask << collision_group_id_shift))
+				| ((static_cast<uint64_t>(group_id) & collision_group_id_mask) << collision_group_id_shift);
 		}
 	};
 
@@ -162,11 +191,17 @@ LUISA_STRUCT(lcs::VertexToDofMap, map_info)
 
 LUISA_STRUCT(lcs::VertexProperty, attribute_info)
 {
-	luisa::compute::Var<bool> is_fixed() const { return (attribute_info & lcs::VertexProperty::flag_is_fixex) != 0; }
-	luisa::compute::Var<bool> is_rigid_body() const { return (attribute_info & lcs::VertexProperty::flag_is_rigid_body) != 0; }
-	luisa::compute::Var<bool> is_soft_body() const { return (attribute_info & lcs::VertexProperty::flag_is_rigid_body) == 0; }
-	luisa::compute::Var<bool> is_init_penetrated() const { return (attribute_info & lcs::VertexProperty::flag_is_init_penetrated) != 0; }
-	luisa::compute::Var<uint> get_object_id() const { return (attribute_info >> 16) & 0x7FFF; }
+	luisa::compute::Var<bool> is_fixed() const { return (attribute_info & lcs::VertexProperty::flag_is_fixex) != uint64_t{0}; }
+	luisa::compute::Var<bool> is_rigid_body() const { return (attribute_info & lcs::VertexProperty::flag_is_rigid_body) != uint64_t{0}; }
+	luisa::compute::Var<bool> is_soft_body() const { return (attribute_info & lcs::VertexProperty::flag_is_rigid_body) == uint64_t{0}; }
+	luisa::compute::Var<bool> is_init_penetrated() const { return (attribute_info & lcs::VertexProperty::flag_is_init_penetrated) != uint64_t{0}; }
+	luisa::compute::Var<uint> get_object_id() const { return static_cast<luisa::compute::Var<uint>>((attribute_info >> lcs::VertexProperty::object_id_shift) & lcs::VertexProperty::object_id_mask); }
+	luisa::compute::Var<uint> get_collision_group_id() const { return static_cast<luisa::compute::Var<uint>>((attribute_info >> lcs::VertexProperty::collision_group_id_shift) & lcs::VertexProperty::collision_group_id_mask); }
+	luisa::compute::Var<bool> has_same_collision_group(const luisa::compute::Var<lcs::VertexProperty>& other) const
+	{
+		const auto group_id = get_collision_group_id();
+		return group_id != 0u & group_id == other->get_collision_group_id();
+	}
 	void set_is_init_penetrated() { attribute_info |= lcs::VertexProperty::flag_is_init_penetrated; }
 	void set_is_not_init_penetrated() { attribute_info &= ~lcs::VertexProperty::flag_is_init_penetrated; }
 };

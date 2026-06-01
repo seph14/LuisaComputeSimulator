@@ -49,6 +49,8 @@ namespace lcs
 		luisa::float3 axis_b_local = luisa::make_float3(1.0f, 0.0f, 0.0f);
 		float		  stiffness_pos = 1.0e4f;
 		float		  stiffness_axis = 1.0e3f;
+		float		  lower_angle = -std::numeric_limits<float>::max();
+		float		  upper_angle = std::numeric_limits<float>::max();
 	};
 
 } // namespace lcs

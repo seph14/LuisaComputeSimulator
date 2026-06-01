@@ -183,6 +183,12 @@ struct WorldDataWrapper
 		return *this;
 	}
 
+	WorldDataWrapper& set_scale_xyz(float sx, float sy, float sz)
+	{
+		wd->set_scale(sx, sy, sz);
+		return *this;
+	}
+
 	std::array<float, 3> get_rest_translation() const
 	{
 		auto t = wd->translation;
@@ -798,6 +804,116 @@ struct PyNewtonBuilder
 		return (global_vid < src_masses.size()) ? src_masses[global_vid] : 0.f;
 	}
 
+	uint get_joint_count() const
+	{
+		return solver_ptr->get_joint_count();
+	}
+
+	uint get_joint_type(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_type(joint_idx);
+	}
+
+	float get_joint_revolute_angle(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_revolute_angle(joint_idx);
+	}
+
+	float get_joint_prismatic_slide(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_prismatic_slide(joint_idx);
+	}
+
+	py::array_t<float> get_all_joint_values() const
+	{
+		std::vector<float> values;
+		solver_ptr->get_joint_values(values);
+		std::vector<ssize_t> shape = { static_cast<ssize_t>(values.size()) };
+		py::array_t<float>	 result(shape);
+		if (!values.empty())
+			std::memcpy(result.mutable_data(), values.data(), values.size() * sizeof(float));
+		return result;
+	}
+
+	py::array_t<uint32_t> get_all_joint_types() const
+	{
+		const uint			  cnt = solver_ptr->get_joint_count();
+		std::vector<ssize_t>  shape = { static_cast<ssize_t>(cnt) };
+		py::array_t<uint32_t> result(shape);
+		auto				  buf = result.mutable_data();
+		for (uint i = 0; i < cnt; ++i)
+		{
+			buf[i] = solver_ptr->get_joint_type(i);
+		}
+		return result;
+	}
+
+	float get_joint_revolute_velocity(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_revolute_velocity(joint_idx);
+	}
+
+	float get_joint_prismatic_velocity(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_prismatic_velocity(joint_idx);
+	}
+
+	py::array_t<float> get_all_joint_velocities() const
+	{
+		std::vector<float> values;
+		solver_ptr->get_joint_velocities(values);
+		std::vector<ssize_t> shape = { static_cast<ssize_t>(values.size()) };
+		py::array_t<float>	 result(shape);
+		if (!values.empty())
+			std::memcpy(result.mutable_data(), values.data(), values.size() * sizeof(float));
+		return result;
+	}
+
+	py::array_t<float> get_rigid_body_velocity(uint registration_id) const
+	{
+		auto			   v = solver_ptr->get_rigid_body_velocity(registration_id);
+		py::array_t<float> result({ (size_t)6 });
+		auto			   buf = result.mutable_data();
+		for (int k = 0; k < 6; ++k)
+			buf[k] = v[k];
+		return result;
+	}
+
+	void set_joint_target_pos(uint joint_idx, float target_pos)
+	{
+		solver_ptr->set_joint_target_pos(joint_idx, target_pos);
+	}
+
+	void set_joint_target_kp(uint joint_idx, float kp)
+	{
+		solver_ptr->set_joint_target_kp(joint_idx, kp);
+	}
+
+	void set_joint_target_kd(uint joint_idx, float kd)
+	{
+		solver_ptr->set_joint_target_kd(joint_idx, kd);
+	}
+
+	float get_joint_target_pos(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_target_pos(joint_idx);
+	}
+
+	float get_joint_target_kp(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_target_kp(joint_idx);
+	}
+
+	float get_joint_target_kd(uint joint_idx) const
+	{
+		return solver_ptr->get_joint_target_kd(joint_idx);
+	}
+
+	void apply_joint_drive_forces()
+	{
+		solver_ptr->apply_joint_drive_forces();
+	}
+
 	// ---------------------------------------------------------------------------
 	// Device management (mirrors lcs::SolverInterface device methods)
 	// ---------------------------------------------------------------------------
@@ -999,6 +1115,7 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("set_translation", &WorldDataWrapper::set_translation, py::arg("x"), py::arg("y"), py::arg("z"), "Set rest translation in world coordinates.")
 		.def("set_rotation", &WorldDataWrapper::set_rotation, py::arg("x"), py::arg("y"), py::arg("z"), "Set rest Euler rotation in radians.")
 		.def("set_scale", &WorldDataWrapper::set_scale, py::arg("scale"), "Set uniform rest scale.")
+		.def("set_scale_xyz", &WorldDataWrapper::set_scale_xyz, py::arg("sx"), py::arg("sy"), py::arg("sz"), "Set per-axis rest scale.")
 		.def("get_rest_translation", &WorldDataWrapper::get_rest_translation, "Return rest translation as [x, y, z].")
 		.def("get_rest_rotation", &WorldDataWrapper::get_rest_rotation, "Return rest Euler rotation as [x, y, z].")
 		.def("get_rest_scale", &WorldDataWrapper::get_rest_scale, "Return rest scale as [x, y, z].")
@@ -1141,7 +1258,24 @@ PYBIND11_MODULE(lcs_py, m)
 			"Return one object simulation result as tuple (vertices, faces) by registration id")
 		.def("get_object_by_registration_id", &PyNewtonBuilder::get_object_by_registration_id, py::arg("registration_id"))
 		.def("get_vert_mass", &PyNewtonBuilder::get_vert_mass, py::arg("global_vid"), "Return mass of a vertex by global vertex id")
-		.def("save_sim_result", &PyNewtonBuilder::save_sim_result, py::arg("obj_path"), "Save current simulation result to an OBJ file.");
+		.def("save_sim_result", &PyNewtonBuilder::save_sim_result, py::arg("obj_path"), "Save current simulation result to an OBJ file.")
+		.def("get_joint_count", &PyNewtonBuilder::get_joint_count)
+		.def("get_joint_type", &PyNewtonBuilder::get_joint_type, py::arg("joint_idx"))
+		.def("get_joint_revolute_angle", &PyNewtonBuilder::get_joint_revolute_angle, py::arg("joint_idx"))
+		.def("get_joint_prismatic_slide", &PyNewtonBuilder::get_joint_prismatic_slide, py::arg("joint_idx"))
+		.def("get_all_joint_values", &PyNewtonBuilder::get_all_joint_values)
+		.def("get_all_joint_types", &PyNewtonBuilder::get_all_joint_types)
+		.def("get_joint_revolute_velocity", &PyNewtonBuilder::get_joint_revolute_velocity, py::arg("joint_idx"))
+		.def("get_joint_prismatic_velocity", &PyNewtonBuilder::get_joint_prismatic_velocity, py::arg("joint_idx"))
+		.def("get_all_joint_velocities", &PyNewtonBuilder::get_all_joint_velocities)
+		.def("get_rigid_body_velocity", &PyNewtonBuilder::get_rigid_body_velocity, py::arg("registration_id"))
+		.def("set_joint_target_pos", &PyNewtonBuilder::set_joint_target_pos, py::arg("joint_idx"), py::arg("target_pos"))
+		.def("set_joint_target_kp", &PyNewtonBuilder::set_joint_target_kp, py::arg("joint_idx"), py::arg("kp"))
+		.def("set_joint_target_kd", &PyNewtonBuilder::set_joint_target_kd, py::arg("joint_idx"), py::arg("kd"))
+		.def("get_joint_target_pos", &PyNewtonBuilder::get_joint_target_pos, py::arg("joint_idx"))
+		.def("get_joint_target_kp", &PyNewtonBuilder::get_joint_target_kp, py::arg("joint_idx"))
+		.def("get_joint_target_kd", &PyNewtonBuilder::get_joint_target_kd, py::arg("joint_idx"))
+		.def("apply_joint_drive_forces", &PyNewtonBuilder::apply_joint_drive_forces);
 
 	// Expose luisa::float3 so Python can access .x/.y/.z on floor, gravity, etc.
 	py::class_<luisa::float3>(m, "Float3")

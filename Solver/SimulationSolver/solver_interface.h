@@ -139,6 +139,26 @@ namespace lcs
 		std::array<float, 3> get_rigid_body_scaling(uint registration_id);
 		std::array<float, 4> get_rigid_body_rotation_quaternion(uint registration_id);
 		std::array<float, 3> get_rigid_body_rotation_axis_angle(uint registration_id);
+		std::array<float, 6> get_rigid_body_velocity(uint registration_id);
+
+		uint  get_joint_count() const;
+		uint  get_joint_type(uint joint_idx) const;
+		float get_joint_revolute_angle(uint joint_idx) const;
+		float get_joint_prismatic_slide(uint joint_idx) const;
+		float get_joint_revolute_velocity(uint joint_idx) const;
+		float get_joint_prismatic_velocity(uint joint_idx) const;
+		void  get_joint_values(std::vector<float>& out_values) const;
+		void  get_joint_velocities(std::vector<float>& out_values) const;
+		void  get_joint_types(std::vector<uint32_t>& out_types) const;
+
+		void  set_joint_target_pos(uint joint_idx, float target_pos);
+		void  set_joint_target_kp(uint joint_idx, float kp);
+		void  set_joint_target_kd(uint joint_idx, float kd);
+		float get_joint_target_pos(uint joint_idx) const;
+		float get_joint_target_kp(uint joint_idx) const;
+		float get_joint_target_kd(uint joint_idx) const;
+
+		void apply_joint_drive_forces();
 
 		void update_per_vertex_animation(const uint meshIdx, const uint local_vid, const std::array<float, 3>& target_position);
 		void update_per_body_animation(const uint body_id, const std::array<float, 3>& target_translation, const std::array<float, 3>& target_rotation);
@@ -163,6 +183,10 @@ namespace lcs
 		std::unordered_map<uint, uint>			   body_to_animation_idx_map;
 		std::vector<Animation::PerVertexAnimation> per_vertex_animations;
 		std::vector<Animation::PerBodyAnimation>   per_body_animations;
+
+		std::vector<float> joint_target_pos;
+		std::vector<float> joint_target_kp;
+		std::vector<float> joint_target_kd;
 
 	protected:
 		MeshData<std::vector>*			  host_mesh_data;

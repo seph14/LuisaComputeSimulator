@@ -2343,6 +2343,14 @@ namespace lcs
 		buffer_upload(stream, host_sim_data->sa_q_step_start, sim_data->sa_q_step_start);
 		buffer_upload(stream, host_sim_data->sa_q_v, sim_data->sa_q_v);
 
+		// Upload dynamic joint drive params (target_pos, kp, kd) before energy evaluation
+		{
+			auto& host_jd = host_sim_data->get_joint_constraint_data().joint_drive_params;
+			auto& dev_jd = sim_data->get_joint_constraint_data().joint_drive_params;
+			if (!host_jd.empty())
+				stream << dev_jd.copy_from(host_jd.data());
+		}
+
 		device_apply_q_to_x(stream, sim_data->sa_q_step_start, sim_data->sa_x_step_start);
 		buffer_copy(stream, sim_data->sa_x_step_start, sim_data->sa_x);
 		buffer_copy(stream, sim_data->sa_q_step_start, sim_data->sa_q);

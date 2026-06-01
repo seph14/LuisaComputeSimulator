@@ -487,7 +487,9 @@ namespace lcs
 			BufferType<float2> stiffness;
 			BufferType<uint>   joint_type; // JointConstraintType as uint32
 			// Limit data
-			BufferType<float2> slide_limits; // Prismatic: (slide_min, slide_max)
+			BufferType<float2> slide_limits; // Prismatic: (slide_min, slide_max) / Revolute: (lower_angle, upper_angle)
+				// Drive data (per-joint, dynamically updated)
+				BufferType<float3> joint_drive_params; // (target_pos, kp, kd)
 
 			static constexpr ConstraintType constraint_type() { return ConstraintType::JointConstraint; }
 			// N=8: each joint has 8 nodes (4 from body A + 4 from body B).
@@ -730,7 +732,8 @@ LUISA_BINDING_GROUP(lcs::Constitutions::JointConstraint<luisa::compute::Buffer>,
 	axis_b_local,
 	stiffness,
 	joint_type,
-	slide_limits){};
+	slide_limits,
+	joint_drive_params){};
 
 /*
 struct BaseSimulationData

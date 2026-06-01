@@ -1020,7 +1020,13 @@ namespace lcs
 			joint_target_kd.resize(cnt, 0.0f);
 		}
 		if (joint_idx < joint_target_pos.size())
+		{
 			joint_target_pos[joint_idx] = target_pos;
+			// Sync to joint_constraint data for GPU energy shader
+			auto& jd = host_sim_data->get_joint_constraint_data().joint_drive_params;
+			if (joint_idx < jd.size())
+				jd[joint_idx] = luisa::make_float3(target_pos, jd[joint_idx].y, jd[joint_idx].z);
+		}
 	}
 
 	void SolverInterface::set_joint_target_kp(uint joint_idx, float kp)
@@ -1034,7 +1040,12 @@ namespace lcs
 			joint_target_kd.resize(cnt, 0.0f);
 		}
 		if (joint_idx < joint_target_kp.size())
+		{
 			joint_target_kp[joint_idx] = kp;
+			auto& jd = host_sim_data->get_joint_constraint_data().joint_drive_params;
+			if (joint_idx < jd.size())
+				jd[joint_idx] = luisa::make_float3(jd[joint_idx].x, kp, jd[joint_idx].z);
+		}
 	}
 
 	void SolverInterface::set_joint_target_kd(uint joint_idx, float kd)
@@ -1048,7 +1059,12 @@ namespace lcs
 			joint_target_kd.resize(cnt, 0.0f);
 		}
 		if (joint_idx < joint_target_kd.size())
+		{
 			joint_target_kd[joint_idx] = kd;
+			auto& jd = host_sim_data->get_joint_constraint_data().joint_drive_params;
+			if (joint_idx < jd.size())
+				jd[joint_idx] = luisa::make_float3(jd[joint_idx].x, jd[joint_idx].y, kd);
+		}
 	}
 
 	float SolverInterface::get_joint_target_pos(uint joint_idx) const

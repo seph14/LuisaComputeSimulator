@@ -1386,6 +1386,8 @@ namespace lcs::Initializer
 			const size_t num_joints = joint_data.constraint_indices.size();
 			joint_data.constraint_gradients.resize(num_joints * 8u, luisa::make_float3(0.f));
 			joint_data.constraint_hessians.resize(num_joints * 64u, luisa::make_float3x3(0.f));
+			// Drive params: (target_pos, kp, kd) per joint, zero-initialized
+			joint_data.joint_drive_params.resize(num_joints, luisa::make_float3(0.0f, 0.0f, 0.0f));
 		}
 
 		// Init Energy Adjacent List
@@ -1833,6 +1835,7 @@ namespace lcs::Initializer
 				<< upload_buffer(device, joint_O.stiffness, joint_I.stiffness)
 				<< upload_buffer(device, joint_O.joint_type, joint_I.joint_type)
 				<< upload_buffer(device, joint_O.slide_limits, joint_I.slide_limits)
+				<< upload_buffer(device, joint_O.joint_drive_params, joint_I.joint_drive_params)
 				<< upload_buffer(device, joint_O.constraint_gradients, joint_I.constraint_gradients)
 				<< upload_buffer(device, joint_O.constraint_hessians, joint_I.constraint_hessians)
 				<< upload_buffer(device, joint_O.constraint_offsets_in_adjlist, joint_I.constraint_offsets_in_adjlist)

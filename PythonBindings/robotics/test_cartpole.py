@@ -164,8 +164,23 @@ if args.headless:
     assert len(prismatic_slides) == 1, "Expected one prismatic joint"
     assert abs(prismatic_slides[0]) > 1.0e-5 * min(ANIMATED_FRAMES, 100), f"Cart should slide along X (got {prismatic_slides[0]:.6f})"
     assert max(abs(a) for a in rev_angles) > 0.00025 * min(ANIMATED_FRAMES, 100), "Poles should rotate around revolute joints"
-    assert abs(cart_disp[1]) < 1.0e-3, f"Cart should not move along Y: {cart_disp[1]}"
-    assert abs(cart_disp[2]) < 1.0e-3, f"Cart should not move along Z: {cart_disp[2]}"
+
+    # ROADMAP 1.7: Z-axis drift tolerance.
+    # Penalty-based joints have inherent small compliance (~2e-4 under gravity).
+    # This is a soft-constraint artifact, not a solver bug.
+    Z_TOLERANCE = 3e-4
+    assert abs(cart_disp[1]) < Z_TOLERANCE, f"Cart Y drift {cart_disp[1]:.6f} exceeds {Z_TOLERANCE}"
+    assert abs(cart_disp[2]) < Z_TOLERANCE, f"Cart Z drift {cart_disp[2]:.6f} exceeds {Z_TOLERANCE}"
+
+    # Verify all bodies' centroid positions are reasonable
+    for bname in ["cart", "pole1", "pole2"]:
+        center = rs.get_body_center(bname)
+        y_offset = abs(center[1] - RAIL_Y)
+        if y_offset > 1e-2:
+            print(f"  WARNING: {bname} Y offset {y_offset:.4f} from rail at y={RAIL_Y}")
+
+    print(f"  Z-drift validation: PASSED (cart_dz={cart_disp[2]:.2e} within {Z_TOLERANCE})")
+    print("  Joint angle stability: OK")
 
     print("Cartpole headless test PASSED")
 

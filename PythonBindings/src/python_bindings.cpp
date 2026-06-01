@@ -346,6 +346,7 @@ struct PySceneParams
 	void set_scene_id(uint v) { params_ptr->scene_id = v; }
 
 	uint get_num_substep() const { return params_ptr->num_substep; }
+	void set_num_substep(uint v) { params_ptr->num_substep = v; }
 
 	uint get_nonlinear_iter_count() const { return params_ptr->nonlinear_iter_count; }
 	void set_nonlinear_iter_count(uint v) { params_ptr->nonlinear_iter_count = v; }
@@ -1341,6 +1342,7 @@ PYBIND11_MODULE(lcs_py, m)
 		.def("set_d_hat", &PySceneParams::set_d_hat, py::arg("v"))
 		.def("get_d_hat", &PySceneParams::get_d_hat)
 		.def("get_num_substep", &PySceneParams::get_num_substep)
+		.def("set_num_substep", &PySceneParams::set_num_substep, py::arg("v"))
 		.def("get_current_nonlinear_iter", &PySceneParams::get_current_nonlinear_iter)
 		.def("get_current_pcg_it", &PySceneParams::get_current_pcg_it)
 		.def("get_current_substep", &PySceneParams::get_current_substep)

@@ -28,11 +28,21 @@ class RobotSolver:
         self._solver.init_device(backend_name=self._backend)
 
     def setup_z_up(self, dt=1.0 / 300.0):
+        """
+        Configure solver for Z-up coordinate system (ROADMAP 0.1-0.2).
+
+        Tuned defaults (ROADMAP 1.8):
+          - dt = 1/300  (balanced accuracy/performance)
+          - num_substep = 3  (joint stability)
+          - nonlinear_iter_count = 5  (convergence)
+          - pcg_iter_count = 200
+        """
         config = self.config
         config.set_gravity(lcs.Float3(0.0, 0.0, -9.8))
         config.set_use_floor(False)
         config.set_use_self_collision(False)
         config.set_implicit_dt(dt)
+        config.set_num_substep(3)
         config.set_nonlinear_iter_count(5)
         config.set_pcg_iter_count(200)
 
@@ -111,8 +121,40 @@ class RobotSolver:
     def get_all_joint_values(self):
         return self._solver.get_all_joint_values()
 
+    def get_all_joint_velocities(self):
+        return self._solver.get_all_joint_velocities()
+
     def get_all_joint_types(self):
         return self._solver.get_all_joint_types()
+
+    # ── ROADMAP-compliant aliases ──────────────────────────────────
+
+    def get_joint_q(self):
+        """ROADMAP 1.2: Get joint positions (angles for revolute, slides for prismatic)."""
+        return self.get_all_joint_values()
+
+    def get_joint_qd(self):
+        """ROADMAP 1.2: Get joint velocities."""
+        return self.get_all_joint_velocities()
+
+    def set_joint_target_pos(self, joint_idx, target):
+        """ROADMAP 1.5: Set target position for a joint."""
+        self._solver.set_joint_target_pos(joint_idx, target)
+
+    def get_body_pose(self, body_name):
+        """ROADMAP 1.6: Get world-frame body pose (translation + rotation quaternion)."""
+        rid = self._body_ids[body_name]
+        t = np.array(self._solver.get_rigid_body_translation(rid), dtype=np.float64)
+        q = np.array(self._solver.get_rigid_body_rotation_quaternion(rid), dtype=np.float64)
+        return t, q  # (translation_xyz, quaternion_wxyz)
+
+    def get_body_velocity(self, body_name):
+        """ROADMAP 1.6: Get world-frame body velocity (linear + angular)."""
+        rid = self._body_ids[body_name]
+        v = np.array(self._solver.get_rigid_body_velocity(rid), dtype=np.float64)
+        return v  # [vx, vy, vz, wx, wy, wz]
+
+    # ───────────────────────────────────────────────────────────────
 
     def print_mesh_info(self):
         self._solver.print_registered_meshes_info()

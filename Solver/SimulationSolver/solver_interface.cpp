@@ -768,6 +768,482 @@ namespace lcs
 		return { rot_vec.x(), rot_vec.y(), rot_vec.z() };
 	}
 
+	uint SolverInterface::get_joint_count() const
+	{
+		return static_cast<uint>(host_sim_data->get_joint_constraint_data().constraint_indices.size());
+	}
+
+	uint SolverInterface::get_joint_type(uint joint_idx) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		if (joint_idx >= joint_data.joint_type.size())
+			return static_cast<uint>(JointConstraintType::Fixed);
+		return joint_data.joint_type[joint_idx];
+	}
+
+	float SolverInterface::get_joint_revolute_angle(uint joint_idx) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		if (joint_idx >= joint_data.constraint_indices.size())
+			return 0.0f;
+		if (joint_data.joint_type[joint_idx] != static_cast<uint>(JointConstraintType::Revolute))
+			return 0.0f;
+
+		const auto& indices = joint_data.constraint_indices[joint_idx];
+		const auto& q = host_sim_data->sa_q_outer;
+
+		float3x3 A = luisa::make_float3x3(q[indices[1]], q[indices[2]], q[indices[3]]);
+		float3x3 B = luisa::make_float3x3(q[indices[5]], q[indices[6]], q[indices[7]]);
+
+		Eigen::Matrix3f R_A, R_B, S_A, S_B;
+		fn_extract_rotation_scaling_from_affine(A, R_A, S_A);
+		fn_extract_rotation_scaling_from_affine(B, R_B, S_B);
+
+		const Eigen::Matrix3f R_ab = R_A.transpose() * R_B;
+
+		const auto		rest_c0 = joint_data.rest_rot_col0_a_to_b[joint_idx];
+		const auto		rest_c1 = joint_data.rest_rot_col1_a_to_b[joint_idx];
+		const auto		rest_c2 = joint_data.rest_rot_col2_a_to_b[joint_idx];
+		Eigen::Matrix3f R_ab_rest;
+		R_ab_rest.col(0) = Eigen::Vector3f(rest_c0.x, rest_c0.y, rest_c0.z);
+		R_ab_rest.col(1) = Eigen::Vector3f(rest_c1.x, rest_c1.y, rest_c1.z);
+		R_ab_rest.col(2) = Eigen::Vector3f(rest_c2.x, rest_c2.y, rest_c2.z);
+
+		const Eigen::Matrix3f R_delta = R_ab * R_ab_rest.transpose();
+
+		const auto			  axis_a_luisa = joint_data.axis_a_local[joint_idx];
+		const Eigen::Vector3f axis_a_local(axis_a_luisa.x, axis_a_luisa.y, axis_a_luisa.z);
+		const Eigen::Vector3f ax_n = axis_a_local.normalized();
+
+		Eigen::Vector3f ref = (std::abs(ax_n.z()) < 0.9f) ? Eigen::Vector3f(0.0f, 0.0f, 1.0f)
+														  : Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+		ref -= ref.dot(ax_n) * ax_n;
+		if (ref.squaredNorm() < 1.0e-12f)
+			return 0.0f;
+		ref.normalize();
+
+		Eigen::Vector3f u = ref;
+		Eigen::Vector3f v = R_delta * u;
+		v -= v.dot(ax_n) * ax_n;
+		if (v.squaredNorm() < 1.0e-12f)
+			return 0.0f;
+		v.normalize();
+
+		const float cos_theta = u.dot(v);
+		const float sin_theta = ax_n.dot(u.cross(v));
+		float		angle = std::atan2(sin_theta, cos_theta);
+
+		if (!std::isfinite(angle))
+			angle = 0.0f;
+
+		return angle;
+	}
+
+	float SolverInterface::get_joint_prismatic_slide(uint joint_idx) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		if (joint_idx >= joint_data.constraint_indices.size())
+			return 0.0f;
+		if (joint_data.joint_type[joint_idx] != static_cast<uint>(JointConstraintType::Prismatic))
+			return 0.0f;
+
+		const auto& indices = joint_data.constraint_indices[joint_idx];
+		const auto& q = host_sim_data->sa_q_outer;
+
+		const float3   p_a = q[indices[0]];
+		const float3x3 A = luisa::make_float3x3(q[indices[1]], q[indices[2]], q[indices[3]]);
+		const float3   p_b = q[indices[4]];
+
+		const float3 anchor_a = joint_data.anchor_a_local[joint_idx];
+		const float3 anchor_b = joint_data.anchor_b_local[joint_idx];
+		const float3 axis_a_local = joint_data.axis_a_local[joint_idx];
+
+		const float3 world_p_a = p_a + A[0] * anchor_a.x + A[1] * anchor_a.y + A[2] * anchor_a.z;
+		const float3 world_p_b = p_b + q[indices[5]] * anchor_b.x + q[indices[6]] * anchor_b.y + q[indices[7]] * anchor_b.z;
+
+		const float3 rest_delta = joint_data.rest_position_delta[joint_idx];
+		const float3 target_delta = A[0] * rest_delta.x + A[1] * rest_delta.y + A[2] * rest_delta.z;
+
+		const float3 d = world_p_b - world_p_a - target_delta;
+		const float3 axis_w = A[0] * axis_a_local.x + A[1] * axis_a_local.y + A[2] * axis_a_local.z;
+
+		return luisa::dot(d, axis_w);
+	}
+
+	void SolverInterface::get_joint_values(std::vector<float>& out_values) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		const uint	cnt = static_cast<uint>(joint_data.constraint_indices.size());
+		out_values.resize(cnt);
+		for (uint i = 0; i < cnt; ++i)
+		{
+			const uint jtype = joint_data.joint_type[i];
+			if (jtype == static_cast<uint>(JointConstraintType::Revolute))
+				out_values[i] = get_joint_revolute_angle(i);
+			else if (jtype == static_cast<uint>(JointConstraintType::Prismatic))
+				out_values[i] = get_joint_prismatic_slide(i);
+			else
+				out_values[i] = 0.0f;
+		}
+	}
+
+	void SolverInterface::get_joint_types(std::vector<uint32_t>& out_types) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		out_types.assign(joint_data.joint_type.begin(), joint_data.joint_type.end());
+	}
+
+	std::array<float, 6> SolverInterface::get_rigid_body_velocity(uint registration_id)
+	{
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+		if (!world_data[sorted_idx].holds<Material::RigidMaterial>())
+		{
+			LUISA_ERROR("Registration id {} is not a rigid body.", registration_id);
+			return { 0, 0, 0, 0, 0, 0 };
+		}
+
+		const uint prefix_vid = host_mesh_data->prefix_num_verts[sorted_idx];
+		const auto dof_info = host_sim_data->sa_x_to_dof_map[prefix_vid];
+		const uint dof_start = dof_info.get_dof_idx();
+
+		const auto& qv = host_sim_data->sa_q_v_outer;
+		const auto& q = host_sim_data->sa_q_outer;
+
+		const float3   lin_vel = qv[dof_start];
+		const float3x3 A_dot = luisa::make_float3x3(qv[dof_start + 1], qv[dof_start + 2], qv[dof_start + 3]);
+		const float3x3 A = luisa::make_float3x3(q[dof_start + 1], q[dof_start + 2], q[dof_start + 3]);
+
+		const Eigen::Matrix3f A_dot_e = float3x3_to_eigen3x3(A_dot);
+		const Eigen::Matrix3f A_e = float3x3_to_eigen3x3(A);
+		const Eigen::Matrix3f A_inv = A_e.inverse();
+
+		const Eigen::Matrix3f skew = A_dot_e * A_inv;
+		const float			  wx = skew(2, 1);
+		const float			  wy = skew(0, 2);
+		const float			  wz = skew(1, 0);
+
+		return { lin_vel.x, lin_vel.y, lin_vel.z, wx, wy, wz };
+	}
+
+	float SolverInterface::get_joint_revolute_velocity(uint joint_idx) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		if (joint_idx >= joint_data.constraint_indices.size())
+			return 0.0f;
+		if (joint_data.joint_type[joint_idx] != static_cast<uint>(JointConstraintType::Revolute))
+			return 0.0f;
+
+		const auto& indices = joint_data.constraint_indices[joint_idx];
+		const auto& qv = host_sim_data->sa_q_v_outer;
+		const auto& q = host_sim_data->sa_q_outer;
+
+		const float3x3 A_dot = luisa::make_float3x3(qv[indices[1]], qv[indices[2]], qv[indices[3]]);
+		const float3x3 B_dot = luisa::make_float3x3(qv[indices[5]], qv[indices[6]], qv[indices[7]]);
+		const float3x3 A = luisa::make_float3x3(q[indices[1]], q[indices[2]], q[indices[3]]);
+		const float3x3 B = luisa::make_float3x3(q[indices[5]], q[indices[6]], q[indices[7]]);
+
+		const Eigen::Matrix3f A_e = float3x3_to_eigen3x3(A);
+		const Eigen::Matrix3f A_dot_e = float3x3_to_eigen3x3(A_dot);
+		const Eigen::Matrix3f B_e = float3x3_to_eigen3x3(B);
+		const Eigen::Matrix3f B_dot_e = float3x3_to_eigen3x3(B_dot);
+
+		const Eigen::Matrix3f A_inv = A_e.inverse();
+		const Eigen::Matrix3f B_inv = B_e.inverse();
+
+		const Eigen::Matrix3f omega_A_skew = A_dot_e * A_inv;
+		const Eigen::Matrix3f omega_B_skew = B_dot_e * B_inv;
+
+		const Eigen::Vector3f omega_A(omega_A_skew(2, 1), omega_A_skew(0, 2), omega_A_skew(1, 0));
+		const Eigen::Vector3f omega_B(omega_B_skew(2, 1), omega_B_skew(0, 2), omega_B_skew(1, 0));
+
+		const Eigen::Vector3f omega_rel = omega_B - omega_A;
+
+		Eigen::Matrix3f R_A, S_A;
+		fn_extract_rotation_scaling_from_affine(A, R_A, S_A);
+
+		const auto			  axis_a_luisa = joint_data.axis_a_local[joint_idx];
+		const Eigen::Vector3f axis_a_local(axis_a_luisa.x, axis_a_luisa.y, axis_a_luisa.z);
+		const Eigen::Vector3f axis_w = R_A * axis_a_local;
+		const Eigen::Vector3f ax_n = axis_w.normalized();
+
+		return static_cast<float>(omega_rel.dot(ax_n));
+	}
+
+	float SolverInterface::get_joint_prismatic_velocity(uint joint_idx) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		if (joint_idx >= joint_data.constraint_indices.size())
+			return 0.0f;
+		if (joint_data.joint_type[joint_idx] != static_cast<uint>(JointConstraintType::Prismatic))
+			return 0.0f;
+
+		const auto& indices = joint_data.constraint_indices[joint_idx];
+		const auto& qv = host_sim_data->sa_q_v_outer;
+		const auto& q = host_sim_data->sa_q_outer;
+
+		const float3 p_a_dot = qv[indices[0]];
+		const float3 p_b_dot = qv[indices[4]];
+
+		const float3x3 A = luisa::make_float3x3(q[indices[1]], q[indices[2]], q[indices[3]]);
+		const float3   axis_a_local = joint_data.axis_a_local[joint_idx];
+		const float3   axis_w = A[0] * axis_a_local.x + A[1] * axis_a_local.y + A[2] * axis_a_local.z;
+
+		const float3 rel_vel = p_b_dot - p_a_dot;
+		return luisa::dot(rel_vel, axis_w);
+	}
+
+	void SolverInterface::get_joint_velocities(std::vector<float>& out_values) const
+	{
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		const uint	cnt = static_cast<uint>(joint_data.constraint_indices.size());
+		out_values.resize(cnt);
+		for (uint i = 0; i < cnt; ++i)
+		{
+			const uint jtype = joint_data.joint_type[i];
+			if (jtype == static_cast<uint>(JointConstraintType::Revolute))
+				out_values[i] = get_joint_revolute_velocity(i);
+			else if (jtype == static_cast<uint>(JointConstraintType::Prismatic))
+				out_values[i] = get_joint_prismatic_velocity(i);
+			else
+				out_values[i] = 0.0f;
+		}
+	}
+
+	void SolverInterface::set_joint_target_pos(uint joint_idx, float target_pos)
+	{
+		if (joint_idx >= joint_target_pos.size())
+		{
+			const auto&	 joint_data = host_sim_data->get_joint_constraint_data();
+			const size_t cnt = joint_data.constraint_indices.size();
+			joint_target_pos.resize(cnt, 0.0f);
+			joint_target_kp.resize(cnt, 0.0f);
+			joint_target_kd.resize(cnt, 0.0f);
+		}
+		if (joint_idx < joint_target_pos.size())
+			joint_target_pos[joint_idx] = target_pos;
+	}
+
+	void SolverInterface::set_joint_target_kp(uint joint_idx, float kp)
+	{
+		const auto&	 joint_data = host_sim_data->get_joint_constraint_data();
+		const size_t cnt = joint_data.constraint_indices.size();
+		if (joint_target_pos.size() != cnt)
+		{
+			joint_target_pos.resize(cnt, 0.0f);
+			joint_target_kp.resize(cnt, 0.0f);
+			joint_target_kd.resize(cnt, 0.0f);
+		}
+		if (joint_idx < joint_target_kp.size())
+			joint_target_kp[joint_idx] = kp;
+	}
+
+	void SolverInterface::set_joint_target_kd(uint joint_idx, float kd)
+	{
+		const auto&	 joint_data = host_sim_data->get_joint_constraint_data();
+		const size_t cnt = joint_data.constraint_indices.size();
+		if (joint_target_pos.size() != cnt)
+		{
+			joint_target_pos.resize(cnt, 0.0f);
+			joint_target_kp.resize(cnt, 0.0f);
+			joint_target_kd.resize(cnt, 0.0f);
+		}
+		if (joint_idx < joint_target_kd.size())
+			joint_target_kd[joint_idx] = kd;
+	}
+
+	float SolverInterface::get_joint_target_pos(uint joint_idx) const
+	{
+		if (joint_idx < joint_target_pos.size())
+			return joint_target_pos[joint_idx];
+		return 0.0f;
+	}
+
+	float SolverInterface::get_joint_target_kp(uint joint_idx) const
+	{
+		if (joint_idx < joint_target_kp.size())
+			return joint_target_kp[joint_idx];
+		return 0.0f;
+	}
+
+	float SolverInterface::get_joint_target_kd(uint joint_idx) const
+	{
+		if (joint_idx < joint_target_kd.size())
+			return joint_target_kd[joint_idx];
+		return 0.0f;
+	}
+
+	// ---------- Joint drive force application (explicit, post-step) ----------
+
+	static void fn_apply_revolute_joint_drive(
+		std::vector<float3>&		sa_q,
+		std::vector<float3>&		sa_q_v,
+		const float*				joint_target_pos,
+		const float*				joint_target_kp,
+		const float*				joint_target_kd,
+		uint						joint_idx,
+		const std::array<uint, 8>&	indices,
+		const std::array<float, 3>& axis_a_local,
+		const std::array<float, 3>& axis_b_local)
+	{
+		const float kp = (joint_target_kp && joint_idx < 10000) ? joint_target_kp[joint_idx] : 0.0f;
+		const float kd = (joint_target_kd && joint_idx < 10000) ? joint_target_kd[joint_idx] : 0.0f;
+		const float target = (joint_target_pos && joint_idx < 10000) ? joint_target_pos[joint_idx] : 0.0f;
+		if (kp <= 0.0f && kd <= 0.0f)
+			return;
+
+		// compute current angle
+		const float3x3 A = luisa::make_float3x3(sa_q[indices[1]], sa_q[indices[2]], sa_q[indices[3]]);
+		const float3x3 B = luisa::make_float3x3(sa_q[indices[5]], sa_q[indices[6]], sa_q[indices[7]]);
+
+		Eigen::Matrix3f R_A, R_B, S;
+		fn_extract_rotation_scaling_from_affine(A, R_A, S);
+		fn_extract_rotation_scaling_from_affine(B, R_B, S);
+		const Eigen::Matrix3f R_rel = R_A.transpose() * R_B;
+
+		const Eigen::Vector3f axis_a{ float(axis_a_local[0]), float(axis_a_local[1]), float(axis_a_local[2]) };
+		const Eigen::Vector3f ax_w = (R_A * axis_a).normalized();
+
+		Eigen::Vector3f ref = (std::abs(ax_w.z()) < 0.9f)
+			? Eigen::Vector3f(0, 0, 1)
+			: Eigen::Vector3f(1, 0, 0);
+		ref -= ref.dot(ax_w) * ax_w;
+		if (ref.squaredNorm() < 1e-12f)
+			return;
+		ref.normalize();
+		Eigen::Vector3f v = R_rel * ref;
+		v -= v.dot(ax_w) * ax_w;
+		if (v.squaredNorm() < 1e-12f)
+			return;
+		v.normalize();
+
+		const float cos_a = ref.dot(v);
+		const float sin_a = ax_w.dot(ref.cross(v));
+		float		cur = std::atan2(sin_a, cos_a);
+		if (!std::isfinite(cur))
+			cur = 0.0f;
+
+		// compute current relative angular velocity
+		const float3x3		  A_dot = luisa::make_float3x3(sa_q_v[indices[1]], sa_q_v[indices[2]], sa_q_v[indices[3]]);
+		const float3x3		  B_dot = luisa::make_float3x3(sa_q_v[indices[5]], sa_q_v[indices[6]], sa_q_v[indices[7]]);
+		const Eigen::Matrix3f A_e = float3x3_to_eigen3x3(A);
+		const Eigen::Matrix3f A_inv = A_e.inverse();
+		const Eigen::Matrix3f omega_A = float3x3_to_eigen3x3(A_dot) * A_inv;
+		const Eigen::Matrix3f B_e_m = float3x3_to_eigen3x3(B);
+		const Eigen::Matrix3f B_inv_m = B_e_m.inverse();
+		const Eigen::Matrix3f omega_B = float3x3_to_eigen3x3(B_dot) * B_inv_m;
+		const Eigen::Vector3f wA(omega_A(2, 1), omega_A(0, 2), omega_A(1, 0));
+		const Eigen::Vector3f wB(omega_B(2, 1), omega_B(0, 2), omega_B(1, 0));
+		const float			  dq = static_cast<float>((wB - wA).dot(ax_w));
+		if (!std::isfinite(dq))
+			return;
+
+		float torque = kp * (target - cur);
+		if (kd > 0.0f)
+			torque += kd * (0.0f - dq);
+
+		// apply torque as equal and opposite forces on anchor offsets
+		Eigen::Vector3f tau_vec = torque * ax_w;
+		// offset along body-A direction perpendicular to axis
+		Eigen::Vector3f perp_a = ref;
+		Eigen::Vector3f fA = tau_vec.cross(perp_a) * 0.5f;
+		Eigen::Vector3f fB = -fA;
+
+		// apply to body A DOF translation part
+		sa_q_v[indices[0]].x += static_cast<float>(fA.x());
+		sa_q_v[indices[0]].y += static_cast<float>(fA.y());
+		sa_q_v[indices[0]].z += static_cast<float>(fA.z());
+		// apply to body B DOF translation part
+		sa_q_v[indices[4]].x += static_cast<float>(fB.x());
+		sa_q_v[indices[4]].y += static_cast<float>(fB.y());
+		sa_q_v[indices[4]].z += static_cast<float>(fB.z());
+	}
+
+	static void fn_apply_prismatic_joint_drive(
+		std::vector<float3>&	   sa_q_v,
+		const float*			   joint_target_pos,
+		const float*			   joint_target_kp,
+		const float*			   joint_target_kd,
+		uint					   joint_idx,
+		const std::array<uint, 8>& indices,
+		const float3&			   axis_a_local,
+		const float3&			   rest_pos_delta)
+	{
+		if (!joint_target_kp || !joint_target_kd || !joint_target_pos)
+			return;
+		const float kp = joint_target_kp[joint_idx];
+		const float kd = joint_target_kd[joint_idx];
+		const float target = joint_target_pos[joint_idx];
+		if (kp <= 0.0f && kd <= 0.0f)
+			return;
+
+		const auto&	 q = sa_q_v;
+		const float3 axis_w = luisa::make_float3(axis_a_local.x, axis_a_local.y, axis_a_local.z);
+		const float3 dv = q[indices[4]] - q[indices[0]];
+		const float	 cur_vel = luisa::dot(dv, axis_w);
+		if (!std::isfinite(cur_vel))
+			return;
+
+		// compute current slide distance
+		const float3x3 A_cur = luisa::make_float3x3(sa_q_v[indices[1]], sa_q_v[indices[2]], sa_q_v[indices[3]]);
+		(void)A_cur; // not needed here, target tracking is velocity-based for simplicity
+
+		float drive_force = kd * (0.0f - cur_vel);
+		if (kp > 0.0f)
+		{
+			// slide position calculation requires sa_q, handle in caller
+			return; // position drive left to explicit energy layer
+		}
+
+		const float3 f = axis_w * drive_force * 0.5f;
+		sa_q_v[indices[0]].x += f.x;
+		sa_q_v[indices[0]].y += f.y;
+		sa_q_v[indices[0]].z += f.z;
+		sa_q_v[indices[4]].x -= f.x;
+		sa_q_v[indices[4]].y -= f.y;
+		sa_q_v[indices[4]].z -= f.z;
+	}
+
+	void SolverInterface::apply_joint_drive_forces()
+	{
+		if (joint_target_pos.empty())
+			return;
+		const auto& joint_data = host_sim_data->get_joint_constraint_data();
+		const uint	cnt = std::min(static_cast<uint>(joint_data.constraint_indices.size()),
+			 static_cast<uint>(joint_target_pos.size()));
+
+		for (uint i = 0; i < cnt; ++i)
+		{
+			const float kp = (i < joint_target_kp.size()) ? joint_target_kp[i] : 0.0f;
+			const float kd = (i < joint_target_kd.size()) ? joint_target_kd[i] : 0.0f;
+			if (kp <= 0.0f && kd <= 0.0f)
+				continue;
+
+			const uint			jtype = joint_data.joint_type[i];
+			const auto&			ind = joint_data.constraint_indices[i];
+			std::array<uint, 8> idx_arr = { ind[0], ind[1], ind[2], ind[3],
+				ind[4], ind[5], ind[6], ind[7] };
+
+			if (jtype == static_cast<uint>(JointConstraintType::Revolute))
+			{
+				const auto&			 a_a = joint_data.axis_a_local[i];
+				std::array<float, 3> ax_arr = { a_a.x, a_a.y, a_a.z };
+				const auto&			 a_b = joint_data.axis_b_local[i];
+				std::array<float, 3> bx_arr = { a_b.x, a_b.y, a_b.z };
+				fn_apply_revolute_joint_drive(
+					host_sim_data->sa_q_outer, host_sim_data->sa_q_v_outer,
+					joint_target_pos.data(), joint_target_kp.data(), joint_target_kd.data(),
+					i, idx_arr, ax_arr, bx_arr);
+			}
+			else if (jtype == static_cast<uint>(JointConstraintType::Prismatic))
+			{
+				fn_apply_prismatic_joint_drive(
+					host_sim_data->sa_q_v_outer,
+					joint_target_pos.data(), joint_target_kp.data(), joint_target_kd.data(),
+					i, idx_arr, joint_data.axis_a_local[i], joint_data.rest_position_delta[i]);
+			}
+		}
+	}
+
 	void SolverInterface::load_saved_state_from_host(const std::string_view& full_path)
 	{
 		std::ifstream file(std::string(full_path), std::ios::in);

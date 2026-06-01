@@ -1379,6 +1379,7 @@ namespace lcs::Initializer
 				joint_data.axis_b_local.push_back(normalize_axis(desc.axis_b_local));
 				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_axis));
 				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Revolute));
+				joint_data.slide_limits.push_back(luisa::make_float2(desc.lower_angle, desc.upper_angle));
 			}
 
 			// Pre-allocate gradient/hessian buffers (filled by eval shader at runtime)

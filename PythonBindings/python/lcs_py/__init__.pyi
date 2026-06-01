@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy
 import pybind11_stubgen.typing_ext
 import typing
-__all__: list[str] = ['Cloth', 'ConstWorldData', 'FixedPointsType', 'Float3', 'MakeFixedPointsInterface', 'MaterialType', 'NewtonSolver', 'Particle', 'Rigid', 'Rod', 'SceneParams', 'Tetrahedral', 'WorldData']
+__all__: list[str] = ['Cloth', 'ConstWorldData', 'FixedPointsType', 'Float3', 'MakeFixedPointsInterface', 'MaterialType', 'NewtonSolver', 'Particle', 'SceneParams', 'Rigid', 'Rod', 'SceneParams', 'Tetrahedral', 'WorldData']
 class ConstWorldData:
     def get_fixed_point_indices(self) -> list:
         """
@@ -234,6 +234,8 @@ class NewtonSolver:
         The anchors are kept coincident while axis_a_local and axis_b_local are aligned,
         leaving rotation around the hinge axis free.
         """
+    def apply_joint_drive_forces(self) -> None:
+        ...
     def cleanup_device(self) -> None:
         """
         Release owned device resources (no-op for borrowed device).
@@ -252,6 +254,12 @@ class NewtonSolver:
         Call set_physics_material_tet() on the returned object to set material params,
         then register_world_data() to add it to the solver.
         """
+    def get_all_joint_types(self) -> numpy.ndarray[numpy.uint32]:
+        ...
+    def get_all_joint_values(self) -> numpy.ndarray[numpy.float32]:
+        ...
+    def get_all_joint_velocities(self) -> numpy.ndarray[numpy.float32]:
+        ...
     def get_config(self) -> SceneParams:
         """
         Return reference to solver-owned SceneParams config
@@ -260,6 +268,24 @@ class NewtonSolver:
         """
         Return the raw pointer (as int) to the active luisa::compute::Device.
         """
+    def get_joint_count(self) -> int:
+        ...
+    def get_joint_prismatic_slide(self, joint_idx: int) -> float:
+        ...
+    def get_joint_prismatic_velocity(self, joint_idx: int) -> float:
+        ...
+    def get_joint_revolute_angle(self, joint_idx: int) -> float:
+        ...
+    def get_joint_revolute_velocity(self, joint_idx: int) -> float:
+        ...
+    def get_joint_target_kd(self, joint_idx: int) -> float:
+        ...
+    def get_joint_target_kp(self, joint_idx: int) -> float:
+        ...
+    def get_joint_target_pos(self, joint_idx: int) -> float:
+        ...
+    def get_joint_type(self, joint_idx: int) -> int:
+        ...
     def get_mesh_names(self) -> list:
         """
         Return registered mesh names ordered by registration id.
@@ -286,6 +312,8 @@ class NewtonSolver:
         """
         Return rigid body translation as (tx, ty, tz).
         """
+    def get_rigid_body_velocity(self, registration_id: int) -> numpy.ndarray[numpy.float32]:
+        ...
     def get_sim_result(self) -> tuple:
         """
         Return simulation results as a tuple (vertices_list, faces_list) of numpy arrays
@@ -357,6 +385,12 @@ class NewtonSolver:
         stream_ptr: integer address of a luisa::compute::Stream object
         The caller must ensure these objects outlive this solver.
         """
+    def set_joint_target_kd(self, joint_idx: int, kd: float) -> None:
+        ...
+    def set_joint_target_kp(self, joint_idx: int, kp: float) -> None:
+        ...
+    def set_joint_target_pos(self, joint_idx: int, target_pos: float) -> None:
+        ...
     def update_per_body_animation(self, mesh_idx: int, target_translation: numpy.ndarray[numpy.float32], target_rotation: numpy.ndarray[numpy.float32]) -> None:
         """
         Update animated rigid body target translation and rotation for a registered object.
@@ -549,6 +583,10 @@ class WorldData:
         """
         Set uniform rest scale.
         """
+    def set_scale_xyz(self, sx: float, sy: float, sz: float) -> WorldData:
+        """
+        Set per-axis rest scale.
+        """
     def set_simulation_type(self, material_type: MaterialType) -> WorldData:
         """
         Set the object simulation/material category.
@@ -562,3 +600,4 @@ Particle: MaterialType  # value = <MaterialType.Particle: 0>
 Rigid: MaterialType  # value = <MaterialType.Rigid: 3>
 Rod: MaterialType  # value = <MaterialType.Rod: 4>
 Tetrahedral: MaterialType  # value = <MaterialType.Tetrahedral: 2>
+SceneParams = SceneParams

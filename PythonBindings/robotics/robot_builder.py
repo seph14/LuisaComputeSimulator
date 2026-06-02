@@ -134,12 +134,21 @@ class RobotBuilder:
             tz += float(lift_vec[2])
             rx, ry, rz = self._matrix_to_lcs_euler(T[:3, :3])
 
+            # Pass URDF mass/COM if available (P3.1)
+            kw_mass = {}
+            if mass is not None and mass > 0:
+                kw_mass["mass"] = float(mass)
+            if link.inertial is not None:
+                if link.inertial.com is not None and np.any(link.inertial.com != 0):
+                    kw_mass["com"] = np.array(link.inertial.com, dtype=np.float64)
+
             body_id = self._rs.add_rigid_body(
                 link_name,
                 mesh.vertices, mesh.faces,
                 tx=float(tx), ty=float(ty), tz=float(tz),
                 rx=float(rx), ry=float(ry), rz=float(rz),
                 fixed=is_fixed,
+                **kw_mass,
             )
             self._link_body_ids[link_name] = body_id
 
@@ -158,10 +167,15 @@ class RobotBuilder:
             jtype = joint.joint_type.lower()
 
             if jtype in ("revolute", "continuous"):
+                # Pass URDF angle limits if defined (P3.1)
+                # Use large values instead of inf to avoid pybind11 float conversion issues
+                lower_angle = joint.lower_limit if joint.lower_limit != 0.0 else -1e10
+                upper_angle = joint.upper_limit if joint.upper_limit != 0.0 else 1e10
                 self._rs.add_revolute_joint(
                     joint.parent, joint.child,
                     anchor_parent, anchor_child, axis,
                     stiffness_pos=5.0e4, stiffness_axis=2.0e3,
+                    lower_angle=lower_angle, upper_angle=upper_angle,
                 )
             elif jtype == "prismatic":
                 self._rs.add_prismatic_joint(

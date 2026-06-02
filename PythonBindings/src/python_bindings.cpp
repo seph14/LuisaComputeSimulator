@@ -708,7 +708,7 @@ struct PyNewtonBuilder
 		py::array_t<float, py::array::c_style | py::array::forcecast> axis_a_local,
 		py::array_t<float, py::array::c_style | py::array::forcecast> axis_b_local,
 		float														  stiffness_pos,
-		float														  stiffness_axis)
+		float														  stiffness_axis, float lower_angle = -std::numeric_limits<float>::max(), float upper_angle = std::numeric_limits<float>::max())
 	{
 		if (anchor_a_local.ndim() != 1 || anchor_a_local.shape(0) != 3 || anchor_b_local.ndim() != 1 || anchor_b_local.shape(0) != 3 || axis_world.ndim() != 1 || axis_world.shape(0) != 3 || axis_a_local.ndim() != 1 || axis_a_local.shape(0) != 3 || axis_b_local.ndim() != 1 || axis_b_local.shape(0) != 3)
 			throw std::runtime_error("All joint vectors must be 1-D arrays of length 3.");
@@ -729,7 +729,9 @@ struct PyNewtonBuilder
 		desc.axis_b_local = luisa::make_float3(ub(0), ub(1), ub(2));
 		desc.stiffness_pos = stiffness_pos;
 		desc.stiffness_axis = stiffness_axis;
-		solver_ptr->add_revolute_joint(desc);
+			desc.lower_angle = lower_angle;
+			desc.upper_angle = upper_angle;
+			solver_ptr->add_revolute_joint(desc);
 	}
 
 	void add_ball_joint(const unsigned int							  body_a_registration,
@@ -1282,6 +1284,8 @@ PYBIND11_MODULE(lcs_py, m)
 			py::arg("axis_b_local"),
 			py::arg("stiffness_pos") = 1.0e4f,
 			py::arg("stiffness_axis") = 1.0e3f,
+			py::arg("lower_angle") = -std::numeric_limits<float>::max(),
+			py::arg("upper_angle") = std::numeric_limits<float>::max(),
 			"Add a revolute/hinge joint between two rigid bodies.\n\n"
 			"The anchors are kept coincident while axis_a_local and axis_b_local are aligned,\n"
 			"leaving rotation around the hinge axis free.")

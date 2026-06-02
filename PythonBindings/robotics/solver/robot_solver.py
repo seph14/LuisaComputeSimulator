@@ -118,7 +118,8 @@ class RobotSolver:
     def add_revolute_joint(self, body_a_name, body_b_name,
                            anchor_a_local, anchor_b_local,
                            axis_world, axis_a_local=None, axis_b_local=None,
-                           stiffness_pos=5.0e4, stiffness_axis=2.0e3):
+                           stiffness_pos=5.0e4, stiffness_axis=2.0e3,
+                           lower_angle=-1e10, upper_angle=1e10):
         if axis_a_local is None:
             axis_a_local = axis_world
         if axis_b_local is None:
@@ -127,8 +128,7 @@ class RobotSolver:
             self._body_ids[body_a_name], self._body_ids[body_b_name],
             anchor_a_local, anchor_b_local,
             axis_world, axis_a_local, axis_b_local,
-            stiffness_pos, stiffness_axis,
-        )
+            stiffness_pos, stiffness_axis, lower_angle, upper_angle)
         self._record_joint(body_a_name, body_b_name, "revolute")
 
     def add_ball_joint(self, body_a_name, body_b_name,

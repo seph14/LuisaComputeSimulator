@@ -369,7 +369,7 @@ namespace lcs
 
 				float thickness = sa_contact_active_verts_offset[vid];
 				float d_hat = sa_contact_active_verts_d_hat[vid];
-				float  floor_d = luisa::dot(floor_origin, floor_normal);
+				float floor_d = luisa::dot(floor_origin, floor_normal);
 				float curr_dist = luisa::dot(x_k, floor_normal) - floor_d;
 				float init_dist = luisa::dot(x_0, floor_normal) - floor_d;
 

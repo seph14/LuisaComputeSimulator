@@ -732,11 +732,11 @@ struct PyNewtonBuilder
 		solver_ptr->add_revolute_joint(desc);
 	}
 
-	void add_ball_joint(const unsigned int							body_a_registration,
-		const unsigned int											body_b_registration,
+	void add_ball_joint(const unsigned int							  body_a_registration,
+		const unsigned int											  body_b_registration,
 		py::array_t<float, py::array::c_style | py::array::forcecast> anchor_a_local,
 		py::array_t<float, py::array::c_style | py::array::forcecast> anchor_b_local,
-		float														stiffness_pos)
+		float														  stiffness_pos)
 	{
 		if (anchor_a_local.ndim() != 1 || anchor_a_local.shape(0) != 3
 			|| anchor_b_local.ndim() != 1 || anchor_b_local.shape(0) != 3)
@@ -754,7 +754,7 @@ struct PyNewtonBuilder
 	}
 
 	void add_free_joint(const unsigned int body_a_registration,
-		const unsigned int				  body_b_registration)
+		const unsigned int				   body_b_registration)
 	{
 		FreeJointConstraintDesc desc;
 		desc.body_a_registration = body_a_registration;

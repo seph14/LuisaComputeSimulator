@@ -12,8 +12,8 @@ namespace lcs
 		Fixed,
 		Prismatic,
 		Revolute,
-		Ball,   // spherical: constrains two anchor points to coincide
-		Free    // floating base: no constraint (root link of free-floating robots)
+		Ball, // spherical: constrains two anchor points to coincide
+		Free  // floating base: no constraint (root link of free-floating robots)
 	};
 
 	struct FixedJointConstraintDesc
@@ -70,8 +70,8 @@ namespace lcs
 	// This is a placeholder — the body is simply registered without any joint.
 	struct FreeJointConstraintDesc
 	{
-		uint32_t	  body_a_registration = 0u;
-		uint32_t	  body_b_registration = 0u;
+		uint32_t body_a_registration = 0u;
+		uint32_t body_b_registration = 0u;
 	};
 
 } // namespace lcs

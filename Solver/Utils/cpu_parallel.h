@@ -444,7 +444,7 @@ namespace CpuParallel
 				{
 					const T curr_offset = index == startIdx ? ctx->zero : (*(ctx->list_prefix_thread))[index - 1];
 					const T next_offset = (*(ctx->list_prefix_thread))[index];
-							(*(ctx->func_output))(index, prefix1 + next_offset, next_offset - curr_offset);
+					(*(ctx->func_output))(index, prefix1 + next_offset, next_offset - curr_offset);
 				}
 			};
 

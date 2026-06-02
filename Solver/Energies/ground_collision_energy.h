@@ -50,7 +50,7 @@ namespace lcs
 			const Constitutions::AbdInertia<luisa::compute::Buffer>& constraint,
 			float3													 floor_origin,
 			float3													 floor_normal,
-			bool													  use_ground_collision,
+			bool													 use_ground_collision,
 			float													 stiffness,
 			uint													 vid_start,
 			uint													 collision_type,
@@ -74,8 +74,8 @@ namespace lcs
 
 		luisa::compute::BufferView<VertexToDofMap> _sa_x_to_dof_map;
 
-		luisa::compute::Shader<1, luisa::compute::BufferView<float3>, float3, float3, bool, float, uint>						 _shader;
-		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint>		 _eval_soft_shader;
+		luisa::compute::Shader<1, luisa::compute::BufferView<float3>, float3, float3, bool, float, uint>					  _shader;
+		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint>	  _eval_soft_shader;
 		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint, uint> _eval_abd_shader;
 	};
 

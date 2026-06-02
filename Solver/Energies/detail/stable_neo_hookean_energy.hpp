@@ -18,10 +18,10 @@ namespace lcs::detail::stable_neo_hookean_energy
 	{
 		template <typename Float3, typename Float3x3>
 		[[nodiscard]] inline auto get_F(
-			const Float3& x0,
-			const Float3& x1,
-			const Float3& x2,
-			const Float3& x3,
+			const Float3&	x0,
+			const Float3&	x1,
+			const Float3&	x2,
+			const Float3&	x3,
 			const Float3x3& Dm_inv)
 		{
 			auto Ds = make_float3x3(x1 - x0, x2 - x0, x3 - x0);
@@ -41,9 +41,9 @@ namespace lcs::detail::stable_neo_hookean_energy
 		template <typename Float, typename Float3, typename Float3x3>
 		[[nodiscard]] inline auto first_pk_stress(const Float3x3& F, const Float mu, const Float lambda)
 		{
-			const Float	  J = determinant(F);
+			const Float	   J = determinant(F);
 			const Float3x3 pJpF = partial_J_partial_F<Float, Float3x3>(F);
-			const Float	  coeff = lambda * (J - Float(1.0f)) - mu;
+			const Float	   coeff = lambda * (J - Float(1.0f)) - mu;
 			return mu * F + coeff * pJpF;
 		}
 
@@ -61,8 +61,8 @@ namespace lcs::detail::stable_neo_hookean_energy
 		[[nodiscard]] inline auto exact_hessian_wrt_F(const Float3x3& F, const Float mu, const Float lambda)
 		{
 			const Float3x3 pJpF = partial_J_partial_F<Float, Float3x3>(F);
-			const Float	  J = determinant(F);
-			const Float	  coeff = lambda * (J - Float(1.0f)) - mu;
+			const Float	   J = determinant(F);
+			const Float	   coeff = lambda * (J - Float(1.0f)) - mu;
 
 			Float9x9 H9;
 			if constexpr (std::is_same_v<Float9x9, float9x9>)
@@ -109,9 +109,9 @@ namespace lcs::detail::stable_neo_hookean_energy
 			const Mat3T F = get_F(in.x0, in.x1, in.x2, in.x3, in.dm_inv);
 			const Mat3T dEdF = first_pk_stress<ScalarT, Vec3T, Mat3T>(F, in.mu, in.lambda);
 			const Mat9T d2EdF2 = exact_hessian_wrt_F<ScalarT, Vec3T, Mat3T, Mat9T>(F, in.mu, in.lambda);
-			const auto  dFdx = FemUtils::get_dFdx(in.dm_inv);
-			const auto  G = in.volume * transpose(dFdx) * FemUtils::flatten(dEdF);
-			const auto  H = in.volume * transpose(dFdx) * d2EdF2 * dFdx;
+			const auto	dFdx = FemUtils::get_dFdx(in.dm_inv);
+			const auto	G = in.volume * transpose(dFdx) * FemUtils::flatten(dEdF);
+			const auto	H = in.volume * transpose(dFdx) * d2EdF2 * dFdx;
 
 			EnergyEvalResult<4, 16, Vec3T, Mat3T> out{};
 			for (int i = 0; i < 4; ++i)
@@ -173,7 +173,7 @@ namespace lcs::detail::stable_neo_hookean_energy
 			Float3x3		hessian[16])
 		{
 			auto eval = evaluate_exact_template<Float, Float3, Float3x3, float9, float9x9>(
-				Input<Float3, Float3x3, Float>{x0, x1, x2, x3, Dm_inv, mu, lambda, volume});
+				Input<Float3, Float3x3, Float>{ x0, x1, x2, x3, Dm_inv, mu, lambda, volume });
 			for (int i = 0; i < 4; ++i)
 			{
 				gradient[i] = eval.gradients[i];

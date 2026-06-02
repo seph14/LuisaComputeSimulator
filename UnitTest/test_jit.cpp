@@ -40,7 +40,7 @@ int main(int argc, char** argv)
 	lbvh_data.sa_sort_values_out = device.create_buffer<uint>(1000);
 	lbvh_data.sa_positions = device.create_buffer<float3>(1000);
 
-	std::vector<uint>	host_sort_values_out(1000);
+	std::vector<uint> host_sort_values_out(1000);
 	std::iota(host_sort_values_out.begin(), host_sort_values_out.end(), 0u);
 	std::vector<float3> host_positions(1000, float3(0.0f, 0.0f, 0.0f));
 

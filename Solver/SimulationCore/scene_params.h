@@ -91,7 +91,7 @@ namespace lcs
 		float d_hat = 1e-3f;
 
 		// Coordinate system
-		UpAxis up_axis = UpAxis::Y_UP; // default backward-compatible
+		UpAxis		up_axis = UpAxis::Y_UP; // default backward-compatible
 		lcs::float3 gravity{ 0, -9.8f, 0 };
 		lcs::float3 floor{ 0, 0, 0 };
 		lcs::float3 floor_normal{ 0, 1, 0 }; // ground plane normal (Y-up default)
@@ -104,15 +104,15 @@ namespace lcs
 			up_axis = axis;
 			if (axis == UpAxis::Z_UP)
 			{
-				gravity      = lcs::float3{0.0f, 0.0f, -9.8f};
-				floor        = lcs::float3{0.0f, 0.0f, 0.0f};
-				floor_normal = lcs::float3{0.0f, 0.0f, 1.0f};
+				gravity = lcs::float3{ 0.0f, 0.0f, -9.8f };
+				floor = lcs::float3{ 0.0f, 0.0f, 0.0f };
+				floor_normal = lcs::float3{ 0.0f, 0.0f, 1.0f };
 			}
 			else
 			{
-				gravity      = lcs::float3{0.0f, -9.8f, 0.0f};
-				floor        = lcs::float3{0.0f, 0.0f, 0.0f};
-				floor_normal = lcs::float3{0.0f, 1.0f, 0.0f};
+				gravity = lcs::float3{ 0.0f, -9.8f, 0.0f };
+				floor = lcs::float3{ 0.0f, 0.0f, 0.0f };
+				floor_normal = lcs::float3{ 0.0f, 1.0f, 0.0f };
 			}
 		}
 

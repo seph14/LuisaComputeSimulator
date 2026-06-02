@@ -25,79 +25,78 @@ using namespace lcs::test;
 namespace
 {
 
-constexpr float kResidualTolerance = 2e-4f;
-constexpr float kSolutionTolerance = 3e-3f;
+	constexpr float kResidualTolerance = 2e-4f;
+	constexpr float kSolutionTolerance = 3e-3f;
 
-struct BlockSystem
-{
-	uint					  num_blocks = 0;
-	Eigen::SparseMatrix<float> A;
-	Eigen::VectorXf			  b;
-};
-
-float3 eigen_segment_to_float3(const Eigen::VectorXf& v, const uint block)
-{
-	return luisa::make_float3(v[3 * block + 0], v[3 * block + 1], v[3 * block + 2]);
-}
-
-
-float3x3 make_block(const Eigen::Matrix3f& m)
-{
-	return eigen3x3_to_float3x3(m);
-}
-
-BlockSystem make_spd_block_system(const uint num_blocks)
-{
-	BlockSystem system;
-	system.num_blocks = num_blocks;
-	system.A.resize(static_cast<int>(num_blocks * 3), static_cast<int>(num_blocks * 3));
-	system.b.resize(static_cast<int>(num_blocks * 3));
-
-	std::vector<Eigen::Triplet<float>> triplets;
-	triplets.reserve(num_blocks * 9 + (num_blocks - 1) * 18);
-
-	for (uint block = 0; block < num_blocks; ++block)
+	struct BlockSystem
 	{
-		Eigen::Matrix3f diag;
-		diag << 7.0f + 0.25f * block, 0.25f, -0.10f,
-			0.25f, 6.0f + 0.15f * block, 0.20f,
-			-0.10f, 0.20f, 5.0f + 0.10f * block;
+		uint					   num_blocks = 0;
+		Eigen::SparseMatrix<float> A;
+		Eigen::VectorXf			   b;
+	};
 
-		for (int r = 0; r < 3; ++r)
-		{
-			for (int c = 0; c < 3; ++c)
-			{
-				triplets.emplace_back(static_cast<int>(block * 3 + r), static_cast<int>(block * 3 + c), diag(r, c));
-			}
-		}
+	float3 eigen_segment_to_float3(const Eigen::VectorXf& v, const uint block)
+	{
+		return luisa::make_float3(v[3 * block + 0], v[3 * block + 1], v[3 * block + 2]);
+	}
 
-		if (block + 1 < num_blocks)
+	float3x3 make_block(const Eigen::Matrix3f& m)
+	{
+		return eigen3x3_to_float3x3(m);
+	}
+
+	BlockSystem make_spd_block_system(const uint num_blocks)
+	{
+		BlockSystem system;
+		system.num_blocks = num_blocks;
+		system.A.resize(static_cast<int>(num_blocks * 3), static_cast<int>(num_blocks * 3));
+		system.b.resize(static_cast<int>(num_blocks * 3));
+
+		std::vector<Eigen::Triplet<float>> triplets;
+		triplets.reserve(num_blocks * 9 + (num_blocks - 1) * 18);
+
+		for (uint block = 0; block < num_blocks; ++block)
 		{
-			Eigen::Matrix3f offdiag;
-			offdiag << -0.45f, 0.04f, 0.00f,
-				0.02f, -0.35f, 0.03f,
-				0.00f, 0.01f, -0.25f;
+			Eigen::Matrix3f diag;
+			diag << 7.0f + 0.25f * block, 0.25f, -0.10f,
+				0.25f, 6.0f + 0.15f * block, 0.20f,
+				-0.10f, 0.20f, 5.0f + 0.10f * block;
 
 			for (int r = 0; r < 3; ++r)
 			{
 				for (int c = 0; c < 3; ++c)
 				{
-					triplets.emplace_back(static_cast<int>(block * 3 + r), static_cast<int>((block + 1) * 3 + c), offdiag(r, c));
-					triplets.emplace_back(static_cast<int>((block + 1) * 3 + c), static_cast<int>(block * 3 + r), offdiag(c, r));
+					triplets.emplace_back(static_cast<int>(block * 3 + r), static_cast<int>(block * 3 + c), diag(r, c));
+				}
+			}
+
+			if (block + 1 < num_blocks)
+			{
+				Eigen::Matrix3f offdiag;
+				offdiag << -0.45f, 0.04f, 0.00f,
+					0.02f, -0.35f, 0.03f,
+					0.00f, 0.01f, -0.25f;
+
+				for (int r = 0; r < 3; ++r)
+				{
+					for (int c = 0; c < 3; ++c)
+					{
+						triplets.emplace_back(static_cast<int>(block * 3 + r), static_cast<int>((block + 1) * 3 + c), offdiag(r, c));
+						triplets.emplace_back(static_cast<int>((block + 1) * 3 + c), static_cast<int>(block * 3 + r), offdiag(c, r));
+					}
 				}
 			}
 		}
+
+		system.A.setFromTriplets(triplets.begin(), triplets.end());
+
+		for (int i = 0; i < system.b.size(); ++i)
+		{
+			system.b[i] = 0.15f + 0.07f * static_cast<float>((i * 5 + 3) % 11);
+		}
+
+		return system;
 	}
-
-	system.A.setFromTriplets(triplets.begin(), triplets.end());
-
-	for (int i = 0; i < system.b.size(); ++i)
-	{
-		system.b[i] = 0.15f + 0.07f * static_cast<float>((i * 5 + 3) % 11);
-	}
-
-	return system;
-}
 
 } // namespace
 
@@ -112,8 +111,8 @@ public:
 		get_config().print_pcg_info = false;
 		init_solver();
 
-		auto* sim = get_host_sim_data();
-		auto* mesh = get_host_mesh_data();
+		auto*	   sim = get_host_sim_data();
+		auto*	   mesh = get_host_mesh_data();
 		const uint n = system.num_blocks;
 
 		sim->num_dof = n;
@@ -204,11 +203,12 @@ public:
 
 		Eigen::VectorXf x_ref = ldlt.solve(system.b);
 
-		get_pcg_solver()->host_solve(stream(), make_spmv(system.A), [] { return 0.0; });
+		get_pcg_solver()->host_solve(stream(), make_spmv(system.A), []
+			{ return 0.0; });
 
 		Eigen::VectorXf x_pcg = float3_vector_to_eigen(get_host_sim_data()->sa_cgX);
-		float residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
-		float solution_error = (x_pcg - x_ref).norm() / std::max(x_ref.norm(), 1.0f);
+		float			residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
+		float			solution_error = (x_pcg - x_ref).norm() / std::max(x_ref.norm(), 1.0f);
 
 		std::cout << "    Relative residual: " << residual << "\n";
 		std::cout << "    Relative solution error: " << solution_error << "\n";
@@ -236,12 +236,13 @@ public:
 		Eigen::VectorXf x_eigen = eigen_cg.solve(system.b);
 		TEST_ASSERT(eigen_cg.info() == Eigen::Success, "Eigen CG solve must succeed");
 
-		get_pcg_solver()->host_solve(stream(), make_spmv(system.A), [] { return 0.0; });
+		get_pcg_solver()->host_solve(stream(), make_spmv(system.A), []
+			{ return 0.0; });
 
 		Eigen::VectorXf x_pcg = float3_vector_to_eigen(get_host_sim_data()->sa_cgX);
-		float eigen_residual = (system.A * x_eigen - system.b).norm() / std::max(system.b.norm(), 1.0f);
-		float pcg_residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
-		float solution_error = (x_pcg - x_eigen).norm() / std::max(x_eigen.norm(), 1.0f);
+		float			eigen_residual = (system.A * x_eigen - system.b).norm() / std::max(system.b.norm(), 1.0f);
+		float			pcg_residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
+		float			solution_error = (x_pcg - x_eigen).norm() / std::max(x_eigen.norm(), 1.0f);
 
 		std::cout << "    Eigen CG iterations: " << eigen_cg.iterations() << "\n";
 		std::cout << "    Eigen relative residual: " << eigen_residual << "\n";
@@ -262,7 +263,7 @@ public:
 		BlockSystem system = make_spd_block_system(4);
 		setup_pcg_harness(system);
 
-		int spmv_call_count = 0;
+		int	 spmv_call_count = 0;
 		auto spmv = make_spmv(system.A);
 		get_pcg_solver()->host_solve(
 			stream(),
@@ -271,10 +272,11 @@ public:
 				++spmv_call_count;
 				spmv(input, output);
 			},
-			[] { return 0.0; });
+			[]
+			{ return 0.0; });
 
 		Eigen::VectorXf x_pcg = float3_vector_to_eigen(get_host_sim_data()->sa_cgX);
-		float residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
+		float			residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
 
 		std::cout << "    SpMV calls: " << spmv_call_count << "\n";
 		std::cout << "    Relative residual: " << residual << "\n";
@@ -291,7 +293,7 @@ public:
 		std::cout << "\n  [Test] Project device PCG vs Eigen SimplicialLDLT...\n";
 
 		constexpr uint n = 4;
-		BlockSystem system = make_spd_block_system(n);
+		BlockSystem	   system = make_spd_block_system(n);
 		setup_pcg_harness(system);
 		upload_pcg_harness_to_device();
 
@@ -318,7 +320,7 @@ public:
 			[device_blocks = device_blocks.view(), n](BufferVar<float3> input, BufferVar<float3> output)
 			{
 				const UInt row = dispatch_id().x;
-				Float3 result = make_float3(0.0f);
+				Float3	   result = make_float3(0.0f);
 				$for(col, 0u, n)
 				{
 					const Float3x3 block = device_blocks->read(row * n + col);
@@ -335,11 +337,12 @@ public:
 				++spmv_call_count;
 				stream() << fn_test_spmv(input, output).dispatch(n);
 			},
-			[] { return 0.0; });
+			[]
+			{ return 0.0; });
 
 		Eigen::VectorXf x_pcg = float3_vector_to_eigen(get_host_sim_data()->sa_cgX);
-		float residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
-		float solution_error = (x_pcg - x_ref).norm() / std::max(x_ref.norm(), 1.0f);
+		float			residual = (system.A * x_pcg - system.b).norm() / std::max(system.b.norm(), 1.0f);
+		float			solution_error = (x_pcg - x_ref).norm() / std::max(x_ref.norm(), 1.0f);
 
 		std::cout << "    Device SpMV calls: " << spmv_call_count << "\n";
 		std::cout << "    Relative residual: " << residual << "\n";

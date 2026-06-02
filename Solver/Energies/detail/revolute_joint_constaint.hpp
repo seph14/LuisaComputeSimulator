@@ -24,13 +24,20 @@ namespace lcs::detail::revolute_joint_constaint
 		const Mat3T&  identity)
 	{
 		RevoluteJointEvalResult<ScalarT, Vec3T, Mat3T> out{};
-		for (auto& g : out.gradients) { g = zero3; }
-		for (auto& H : out.hessians) { H = zero3x3; }
+		for (auto& g : out.gradients)
+		{
+			g = zero3;
+		}
+		for (auto& H : out.hessians)
+		{
+			H = zero3x3;
+		}
 
 		auto add_linear_term = [&](const Mat3T(&coeff)[8], const Vec3T& bias, const ScalarT stiffness)
 		{
 			Vec3T r = bias;
-			for (int i = 0; i < 8; ++i) r += coeff[i] * q[i];
+			for (int i = 0; i < 8; ++i)
+				r += coeff[i] * q[i];
 			for (int i = 0; i < 8; ++i)
 			{
 				out.gradients[i] += stiffness * (coeff[i] * r);
@@ -78,7 +85,7 @@ namespace lcs::detail::revolute_joint_constaint
 		const Vec3T&  axis_b_local,
 		const ScalarT stiffness_pos,
 		const ScalarT stiffness_axis,
-		const Mat3T&  /*identity*/)
+		const Mat3T& /*identity*/)
 	{
 		Vec3T p_a = q[0] + q[1] * anchor_a_local.x + q[2] * anchor_a_local.y + q[3] * anchor_a_local.z;
 		Vec3T p_b = q[4] + q[5] * anchor_b_local.x + q[6] * anchor_b_local.y + q[7] * anchor_b_local.z;

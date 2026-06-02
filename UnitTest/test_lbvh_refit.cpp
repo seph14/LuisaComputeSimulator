@@ -358,8 +358,8 @@ int main(int argc, char** argv)
 		auto fn_update_vert_tree_leave_aabb = device.compile<1>(
 			[sa_sort_values_out =
 					lbvh_data.sa_sort_values_out.view()](const Var<luisa::compute::BufferView<float3>> sa_x_start,
-				const Var<luisa::compute::BufferView<float3>>											   sa_x_end,
-				const Float																				   thickness)
+				const Var<luisa::compute::BufferView<float3>>										   sa_x_end,
+				const Float																			   thickness)
 			{
 				const Uint lid = dispatch_id().x;
 				Uint	   vid = sa_sort_values_out->read(lid);

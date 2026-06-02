@@ -15,6 +15,9 @@ class RobotSolver:
         self._backend = backend_name
         self._initialized = False
         self._body_ids = {}
+        # Joint metadata: maps (parent_name, child_name) -> (joint_index, joint_type)
+        self._joint_index_map: dict = {}
+        self._joint_names: list = []
 
     @property
     def solver(self):
@@ -106,6 +109,7 @@ class RobotSolver:
             anchor_a_local, anchor_b_local, axis_world,
             stiffness_pos, stiffness_rot, slide_min, slide_max,
         )
+        self._record_joint(body_a_name, body_b_name, "prismatic")
 
     def add_revolute_joint(self, body_a_name, body_b_name,
                            anchor_a_local, anchor_b_local,
@@ -121,6 +125,32 @@ class RobotSolver:
             axis_world, axis_a_local, axis_b_local,
             stiffness_pos, stiffness_axis,
         )
+        self._record_joint(body_a_name, body_b_name, "revolute")
+
+    def add_ball_joint(self, body_a_name, body_b_name,
+                       anchor_a_local, anchor_b_local,
+                       stiffness_pos=5.0e4):
+        """Add a ball (spherical) joint: constrains anchors to coincide, free rotation."""
+        self._solver.add_ball_joint(
+            self._body_ids[body_a_name], self._body_ids[body_b_name],
+            anchor_a_local, anchor_b_local,
+            stiffness_pos,
+        )
+        self._record_joint(body_a_name, body_b_name, "ball")
+
+    def add_free_joint(self, body_a_name, body_b_name):
+        """Add a free (floating) joint: no constraint (placeholder for floating base)."""
+        self._solver.add_free_joint(
+            self._body_ids[body_a_name], self._body_ids[body_b_name],
+        )
+        self._record_joint(body_a_name, body_b_name, "free")
+
+    def _record_joint(self, body_a_name, body_b_name, jtype):
+        """Record joint metadata for name-based lookup."""
+        idx = len(self._joint_names)
+        pair = (body_a_name, body_b_name)
+        self._joint_index_map[pair] = (idx, jtype)
+        self._joint_names.append(f"{body_a_name}_{body_b_name}_{jtype}")
 
     def init_solver(self):
         self._solver.init_solver()
@@ -203,16 +233,29 @@ class RobotSolver:
 
     def get_joint_index(self, body_a: str, body_b: str) -> int:
         """Find joint index connecting two bodies by name."""
-        a_id = self._body_ids.get(body_a, -1)
-        b_id = self._body_ids.get(body_b, -1)
-        if a_id < 0 or b_id < 0:
-            return -1
-        # Search joints for matching body pair
-        for i in range(self.get_joint_count()):
-            # Body indices are stored in the joint constraint data
-            # This is a heuristic — exact match requires joint metadata
-            pass
+        pair = (body_a, body_b)
+        rev_pair = (body_b, body_a)
+        if pair in self._joint_index_map:
+            return self._joint_index_map[pair][0]
+        if rev_pair in self._joint_index_map:
+            return self._joint_index_map[rev_pair][0]
         return -1
+
+    def get_joint_name(self, idx: int) -> str:
+        """Get joint name by index."""
+        if 0 <= idx < len(self._joint_names):
+            return self._joint_names[idx]
+        return ""
+
+    def get_joint_type_by_name(self, body_a: str, body_b: str) -> str:
+        """Get joint type string by body names."""
+        pair = (body_a, body_b)
+        rev_pair = (body_b, body_a)
+        if pair in self._joint_index_map:
+            return self._joint_index_map[pair][1]
+        if rev_pair in self._joint_index_map:
+            return self._joint_index_map[rev_pair][1]
+        return ""
 
     # ───────────────────────────────────────────────────────────────
 

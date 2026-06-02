@@ -9,7 +9,7 @@ import os
 import numpy as np
 import trimesh
 
-from robotics.parser.urdf_parser import URDFRobotModel, URDFJoint, URDFLink
+from robotics.parser.urdf_parser import URDFParser, URDFRobotModel, URDFJoint, URDFLink
 
 
 class RobotBuilder:
@@ -133,6 +133,8 @@ class RobotBuilder:
                     anchor_parent, anchor_child,
                     stiffness_pos=1.0e6, stiffness_rot=1.0e5,
                 )
+            elif jtype in ("floating", "free"):
+                self._rs.add_free_joint(joint.parent, joint.child)
 
             self._joint_body_pairs.append((parent_id, child_id))
 
@@ -140,8 +142,6 @@ class RobotBuilder:
 
     def _compute_link_transforms(self) -> dict:
         """Compute world-frame 4x4 transform for each link (Z-up convention)."""
-        from scipy.spatial.transform import Rotation as R
-
         transforms = {}
         # Root is at origin
         transforms[self._model.root_link] = np.eye(4)
@@ -157,15 +157,33 @@ class RobotBuilder:
                 T_child = T_parent.copy()
                 if joint is not None:
                     # Apply joint origin (parent frame → child frame)
-                    r = R.from_euler('xyz', joint.origin_rpy)
                     T_joint = np.eye(4)
-                    T_joint[:3, :3] = r.as_matrix()
+                    T_joint[:3, :3] = self._rpy_to_matrix(joint.origin_rpy)
                     T_joint[:3, 3] = joint.origin_xyz
                     T_child = T_parent @ T_joint
                 transforms[child] = T_child
                 queue.append(child)
 
         return transforms
+
+    @staticmethod
+    def _rpy_to_matrix(rpy) -> np.ndarray:
+        """Convert URDF fixed-axis roll-pitch-yaw angles to a rotation matrix."""
+        roll, pitch, yaw = [float(v) for v in rpy]
+        cr, sr = np.cos(roll), np.sin(roll)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        cy, sy = np.cos(yaw), np.sin(yaw)
+
+        rx = np.array([[1.0, 0.0, 0.0],
+                       [0.0, cr, -sr],
+                       [0.0, sr, cr]], dtype=np.float64)
+        ry = np.array([[cp, 0.0, sp],
+                       [0.0, 1.0, 0.0],
+                       [-sp, 0.0, cp]], dtype=np.float64)
+        rz = np.array([[cy, -sy, 0.0],
+                       [sy, cy, 0.0],
+                       [0.0, 0.0, 1.0]], dtype=np.float64)
+        return rz @ ry @ rx
 
     def _find_joint(self, parent: str, child: str) -> URDFJoint | None:
         for j in self._model.joints:

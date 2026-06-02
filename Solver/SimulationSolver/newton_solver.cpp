@@ -833,7 +833,7 @@ namespace lcs
 				sa_contact_active_verts_offset = sim_data->sa_contact_active_verts_offset.view(),
 				sa_contact_active_verts_d_hat = sim_data->sa_contact_active_verts_d_hat.view(),
 				toi_per_vert = collision_data->toi_per_vert.view(),
-				sa_x_property = sim_data->sa_x_property.view()](Float floor_y, Bool use_ground_collision)
+				sa_x_property = sim_data->sa_x_property.view()](Float3 floor_origin, Float3 floor_normal, Bool use_ground_collision)
 			{
 				// Indirect index: each thread handles one active (surface) vertex
 				const UInt active_idx = dispatch_id().x;
@@ -846,12 +846,13 @@ namespace lcs
 					$if(!property->is_fixed())
 					{
 						Float offset = sa_contact_active_verts_offset->read(vid);
-						Float curr_y = sa_x->read(vid).y;
-						$if(curr_y - offset < floor_y)
+						Float floor_d = dot(floor_origin, floor_normal);
+						Float curr_dist = dot(sa_x->read(vid), floor_normal) - floor_d;
+						$if(curr_dist - offset < 0.0f)
 						{
-							Float init_y = sa_x_iter_start->read(vid).y;
-							Float curr_dy = curr_y - init_y; // abs
-							toi = (init_y - offset - floor_y) / (init_y - curr_y) / accd::line_search_max_t;
+							Float init_dist = dot(sa_x_iter_start->read(vid), floor_normal) - floor_d;
+							Float curr_dy = curr_dist - init_dist; // abs
+							toi = (init_dist - offset) / (init_dist - curr_dist) / accd::line_search_max_t;
 						};
 					};
 				};
@@ -1401,7 +1402,7 @@ namespace lcs
 
 		if (get_scene_params().use_floor)
 		{
-			stream << fn_gound_collision_ccd(get_scene_params().floor.y, get_scene_params().use_floor)
+			stream << fn_gound_collision_ccd(get_scene_params().floor, get_scene_params().floor_normal, get_scene_params().use_floor)
 						  .dispatch(sim_data->sa_contact_active_verts.size());
 		}
 
@@ -2418,7 +2419,8 @@ namespace lcs
 
 						get_ground_collision_energy()->device_compute_energy(stream,
 							soft_inertia,
-							get_scene_params().floor.y,
+							get_scene_params().floor,
+							get_scene_params().floor_normal,
 							get_scene_params().use_floor,
 							get_scene_params().stiffness_collision,
 							get_scene_params().contact_energy_type,
@@ -2474,7 +2476,8 @@ namespace lcs
 
 						get_ground_collision_energy()->device_compute_energy(stream,
 							abd_inertia_data,
-							get_scene_params().floor.y,
+							get_scene_params().floor,
+							get_scene_params().floor_normal,
 							get_scene_params().use_floor,
 							get_scene_params().stiffness_collision,
 							host_sim_data->num_verts_soft,

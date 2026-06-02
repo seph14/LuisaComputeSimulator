@@ -123,16 +123,16 @@ namespace lcs
 
 		luisa::compute::Shader<1, float, float3>																fn_predict_position; // const Float substep_dt
 		luisa::compute::Shader<1, float, bool, float>															fn_update_velocity;	 // const Float substep_dt, const Bool fix_scene, const Float damping
-		luisa::compute::Shader<1, float, bool>																	fn_gound_collision_ccd;
+		luisa::compute::Shader<1, float3, float3, bool>																fn_gound_collision_ccd;
 		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float>					fn_evaluate_soft_inertia; // Float substep_dt
-		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float, bool, float, uint> fn_evaluate_soft_ground_collision;
+		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint> fn_evaluate_soft_ground_collision;
 		luisa::compute::Shader<1, Constitutions::StretchSpring<luisa::compute::Buffer>>							fn_evaluate_spring; // Float stiffness_stretch
 		luisa::compute::Shader<1, Constitutions::StretchFace<luisa::compute::Buffer>>							fn_evaluate_stretch_face;
 		luisa::compute::Shader<1, Constitutions::BendingEdge<luisa::compute::Buffer>, float>					fn_evaluate_bending; // Float stiffness_bending
 
 		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, float>							 fn_evaluate_abd_inertia; // Float substep_dt
 		luisa::compute::Shader<1, Constitutions::AbdOrthogonality<luisa::compute::Buffer>>							 fn_evaluate_abd_orthogonality;
-		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, float, bool, float, uint, uint> fn_evaluate_abd_ground_collision;
+		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint, uint> fn_evaluate_abd_ground_collision;
 
 		luisa::compute::Shader<1, Constitutions::StretchSpring<luisa::compute::Buffer>>			 fn_material_energy_assembly_stretch_spring;
 		luisa::compute::Shader<1, Constitutions::StretchFace<luisa::compute::Buffer>>			 fn_material_energy_assembly_stretch_face;

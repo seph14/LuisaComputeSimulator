@@ -37,25 +37,27 @@ namespace lcs
 
 	void GroundCollisionEnergy::device_compute_energy(luisa::compute::Stream& stream,
 		const Constitutions::SoftInertia<luisa::compute::Buffer>&			  constraint,
-		float																  floor_y,
+		float3																  floor_origin,
+		float3																  floor_normal,
 		bool																  use_ground_collision,
 		float																  stiffness,
 		uint																  collision_type,
 		size_t																  dispatch_count)
 	{
-		stream << _eval_soft_shader(constraint, floor_y, use_ground_collision, stiffness, collision_type).dispatch(_sa_contact_active_verts.size());
+		stream << _eval_soft_shader(constraint, floor_origin, floor_normal, use_ground_collision, stiffness, collision_type).dispatch(_sa_contact_active_verts.size());
 	}
 
 	void GroundCollisionEnergy::device_compute_energy(luisa::compute::Stream& stream,
 		const Constitutions::AbdInertia<luisa::compute::Buffer>&			  constraint,
-		float																  floor_y,
+		float3																  floor_origin,
+		float3																  floor_normal,
 		bool																  use_ground_collision,
 		float																  stiffness,
 		uint																  vid_start,
 		uint																  collision_type,
 		size_t																  dispatch_count)
 	{
-		stream << _eval_abd_shader(constraint, floor_y, use_ground_collision, stiffness, vid_start, collision_type)
+		stream << _eval_abd_shader(constraint, floor_origin, floor_normal, use_ground_collision, stiffness, vid_start, collision_type)
 					  .dispatch(_sa_contact_active_verts.size());
 	}
 
@@ -71,7 +73,7 @@ namespace lcs
 				sa_contact_active_verts_friction_coeff = _sa_contact_active_verts_friction_coeff,
 				sa_x_step_start = _sa_x_step_start,
 				sa_system_energy = _sa_system_energy](
-				Var<BufferView<float3>> sa_x, Float floor_y, Bool use_ground_collision, Float stiffness, Uint collision_type)
+				Var<BufferView<float3>> sa_x, Float3 floor_origin, Float3 floor_normal, Bool use_ground_collision, Float stiffness, Uint collision_type)
 			{
 				const Uint vid = dispatch_id().x;
 
@@ -86,12 +88,13 @@ namespace lcs
 					Float area = sa_rest_vert_area->read(vid);
 					Float stiff = stiffness * area;
 
-					Float3 normal = make_float3(0.0f, 1.0f, 0.0f);
+					Float3 normal = floor_normal;
+					Float  floor_d = dot(floor_origin, floor_normal);
 
 					Float3 x_k = sa_x->read(vid);
 					Float3 x_0 = sa_x_step_start->read(vid);
 
-					Float curr_dist = x_k.y - floor_y;
+					Float curr_dist = dot(x_k, normal) - floor_d;
 					$if(curr_dist - thickness < d_hat)
 					{
 						$if(collision_type == 0)
@@ -106,7 +109,7 @@ namespace lcs
 						};
 					};
 
-					Float init_dist = x_0.y - floor_y;
+					Float init_dist = dot(x_0, normal) - floor_d;
 					$if(init_dist - thickness < d_hat)
 					{
 						Float3 rel_dx = x_k - x_0;
@@ -155,7 +158,8 @@ namespace lcs
 					_sa_contact_active_verts_friction_coeff](const Uint vid,
 				Float3&													out_gradient,
 				Float3x3&												out_hessian,
-				const Float												floor_y,
+				const Float3											floor_origin,
+				const Float3											floor_normal,
 				const Bool												use_ground_collision,
 				const Float												stiffness,
 				const Uint												collision_type)
@@ -169,12 +173,13 @@ namespace lcs
 				Float d_hat = sa_contact_active_verts_d_hat->read(vid);
 				Float thickness = sa_contact_active_verts_offset->read(vid);
 
-				float3 normal = luisa::make_float3(0, 1, 0);
+				Float3 normal = floor_normal;
+				Float  floor_d = dot(floor_origin, floor_normal);
 				Float  area = sa_rest_vert_area->read(vid);
 				Float  stiff = stiffness * area;
 
 				// Repulsion
-				Float curr_dist = x_k.y - floor_y;
+				Float curr_dist = dot(x_k, normal) - floor_d;
 				$if(curr_dist - thickness < d_hat)
 				{
 					Float k1;
@@ -200,7 +205,7 @@ namespace lcs
 				};
 
 				// Friction
-				Float init_dist = x_0.y - floor_y;
+				Float init_dist = dot(x_0, normal) - floor_d;
 				$if(init_dist - thickness < d_hat)
 				{
 					Float k1;
@@ -234,7 +239,8 @@ namespace lcs
 			[calculate_per_vert_grad_hess_template,
 				sa_contact_active_verts = _sa_contact_active_verts,
 				sa_x_to_dof_map = _sa_x_to_dof_map](Var<Constitutions::SoftInertia<luisa::compute::Buffer>> contraint,
-				Float																						floor_y,
+				Float3																						floor_origin,
+				Float3																						floor_normal,
 				Bool																						use_ground_collision,
 				Float																						stiffness,
 				Uint																						collision_type)
@@ -252,7 +258,7 @@ namespace lcs
 					Float3	 grad = make_float3(0.0f);
 					Float3x3 hess = make_float3x3(0.0f);
 					Bool	 collide = calculate_per_vert_grad_hess_template(
-						vid, grad, hess, floor_y, use_ground_collision, stiffness, collision_type);
+						vid, grad, hess, floor_origin, floor_normal, use_ground_collision, stiffness, collision_type);
 
 					$if(collide)
 					{
@@ -269,7 +275,8 @@ namespace lcs
 				sa_scaled_model_x = _sa_scaled_model_x,
 				sa_x_to_dof_map = _sa_x_to_dof_map,
 				calculate_per_vert_grad_hess_template](Var<Constitutions::AbdInertia<luisa::compute::Buffer>> constraint,
-				Float																						  floor_y,
+				Float3																						  floor_origin,
+				Float3																						  floor_normal,
 				Bool																						  use_ground_collision,
 				Float																						  stiffness,
 				Uint																						  vid_start,
@@ -291,7 +298,7 @@ namespace lcs
 					Float3	 grad = make_float3(0.0f);
 					Float3x3 hess = make_float3x3(0.0f);
 					Bool	 collide = calculate_per_vert_grad_hess_template(
-						vid, grad, hess, floor_y, use_ground_collision, stiffness, collision_type);
+						vid, grad, hess, floor_origin, floor_normal, use_ground_collision, stiffness, collision_type);
 
 					const Float4 weight = make_float4(1.0f, sa_scaled_model_x->read(vid));
 
@@ -319,13 +326,14 @@ namespace lcs
 
 	void GroundCollisionEnergy::device_compute_energy(luisa::compute::Stream& stream,
 		const luisa::compute::Buffer<float3>&								  sa_x,
-		float																  floor_y,
+		float3																  floor_origin,
+		float3																  floor_normal,
 		bool																  use_ground_collision,
 		float																  stiffness,
 		uint																  collision_type,
 		size_t																  dispatch_count)
 	{
-		stream << _shader(sa_x, floor_y, use_ground_collision, stiffness, collision_type).dispatch(dispatch_count);
+		stream << _shader(sa_x, floor_origin, floor_normal, use_ground_collision, stiffness, collision_type).dispatch(dispatch_count);
 	}
 
 	double GroundCollisionEnergy::host_evaluate(const std::vector<float>& host_energy)
@@ -347,7 +355,8 @@ namespace lcs
 				sa_contact_active_verts_friction_coeff = std::span(host_sim_data.sa_contact_active_verts_friction_coeff),
 				sa_is_fixed = std::span(host_mesh_data.sa_is_fixed),
 				sa_rest_vert_area = std::span(host_mesh_data.sa_rest_vert_area),
-				floor_y = get_scene_params().floor.y,
+				floor_origin = get_scene_params().floor,
+				floor_normal = get_scene_params().floor_normal,
 				stiffness_ground = get_scene_params().stiffness_collision,
 				collision_type = get_scene_params().contact_energy_type](
 				const uint vid, float3& out_gradient, float3x3& out_hessian) -> bool
@@ -360,10 +369,11 @@ namespace lcs
 
 				float thickness = sa_contact_active_verts_offset[vid];
 				float d_hat = sa_contact_active_verts_d_hat[vid];
-				float curr_dist = x_k.y - floor_y;
-				float init_dist = x_0.y - floor_y;
+				float  floor_d = luisa::dot(floor_origin, floor_normal);
+				float curr_dist = luisa::dot(x_k, floor_normal) - floor_d;
+				float init_dist = luisa::dot(x_0, floor_normal) - floor_d;
 
-				float3 normal = luisa::make_float3(0, 1, 0);
+				float3 normal = floor_normal;
 				float  area = sa_rest_vert_area[vid];
 				float  stiff = stiffness_ground * area;
 

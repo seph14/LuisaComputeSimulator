@@ -30,7 +30,8 @@ namespace lcs
 		void device_compute_energy(luisa::compute::Stream& stream) override;
 		void device_compute_energy(luisa::compute::Stream& stream,
 			const luisa::compute::Buffer<float3>&		   sa_x,
-			float										   floor_y,
+			float3										   floor_origin,
+			float3										   floor_normal,
 			bool										   use_ground_collision,
 			float										   stiffness,
 			uint										   collision_type,
@@ -38,7 +39,8 @@ namespace lcs
 		// evaluate variants that compute per-constraint gradients/hessians
 		void device_compute_energy(luisa::compute::Stream&			  stream,
 			const Constitutions::SoftInertia<luisa::compute::Buffer>& constraint,
-			float													  floor_y,
+			float3													  floor_origin,
+			float3													  floor_normal,
 			bool													  use_ground_collision,
 			float													  stiffness,
 			uint													  collision_type,
@@ -46,8 +48,9 @@ namespace lcs
 
 		void device_compute_energy(luisa::compute::Stream&			 stream,
 			const Constitutions::AbdInertia<luisa::compute::Buffer>& constraint,
-			float													 floor_y,
-			bool													 use_ground_collision,
+			float3													 floor_origin,
+			float3													 floor_normal,
+			bool													  use_ground_collision,
 			float													 stiffness,
 			uint													 vid_start,
 			uint													 collision_type,
@@ -71,9 +74,9 @@ namespace lcs
 
 		luisa::compute::BufferView<VertexToDofMap> _sa_x_to_dof_map;
 
-		luisa::compute::Shader<1, luisa::compute::BufferView<float3>, float, bool, float, uint>						 _shader;
-		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float, bool, float, uint>		 _eval_soft_shader;
-		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, float, bool, float, uint, uint> _eval_abd_shader;
+		luisa::compute::Shader<1, luisa::compute::BufferView<float3>, float3, float3, bool, float, uint>						 _shader;
+		luisa::compute::Shader<1, Constitutions::SoftInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint>		 _eval_soft_shader;
+		luisa::compute::Shader<1, Constitutions::AbdInertia<luisa::compute::Buffer>, float3, float3, bool, float, uint, uint> _eval_abd_shader;
 	};
 
 } // namespace lcs

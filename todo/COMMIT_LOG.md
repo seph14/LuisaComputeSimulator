@@ -1,6 +1,11 @@
 # LuisaComputeSimulator 提交详细记录
 
-本文档记录从 `newton_examples` 分支的完整提交历史，每笔提交对应的 ROADMAP 任务、改动的文件、以及技术细节。
+本文档记录 `newton_examples` 分支相对 `origin/newton_examples` 领先的提交、对应 ROADMAP 任务、改动文件、技术细节，以及对当前实现质量和后续计划的审查结论。
+
+**口径说明**:
+- 当前分支相对 `origin/newton_examples` 领先 21 个提交：20 个代码/资产提交（`4835e42` 到 `4c750bd`）+ 1 个文档提交（`468a054`，新增本文件）。
+- `24af0c5` 和 `1dfd734` 位于当前分支历史中，但不是相对 `origin/newton_examples` 的新增提交；下文保留它们作为基线背景。
+- “ROADMAP 已覆盖”不等同于“Newton example 已 1:1 复现”。本分支很多测试是 smoke / scaffold / proxy 场景，不能替代 Newton README 的 exact scene parity。
 
 ---
 
@@ -77,7 +82,8 @@
   - `set_up_axis()` 自动设置对应的 `floor_normal`
   - Python bindings 暴露 `set/get_floor_normal`
 - **文件**: `scene_params.h`, `python_bindings.cpp`
-- **技术细节**: `floor_normal` 为后续 ground plane shader 升级预留接口
+- **完成度**: 部分完成。`floor_normal` 目前只是配置接口；ground collision energy、ground CCD 和 `newton_solver.cpp` 仍使用 `floor.y` / Y-up 平面逻辑。
+- **技术细节**: `floor_normal` 为后续 ground plane shader 升级预留接口，尚不能宣称任意平面地面可用。
 
 ---
 
@@ -112,7 +118,8 @@
   - Eval 着色器：Ball → 解析梯度（rank-1 外积 Hessian）, Free → 零梯度
   - Host evaluate 同逻辑
 - **文件**: `joint_constraint.h`, `joint_constraint_energy.cpp`
-- **技术细节**: Ball joint 是最简单的约束类型，仅需位置惩罚，无需轴/角度计算
+- **完成度**: 部分完成。类型和 energy 分支已经存在，但 `init_sim_data.cpp` 仍只初始化 Fixed/Prismatic/Revolute，`solver_interface`/Python bindings/`RobotBuilder` 尚没有可实际创建 Ball/Free joint 的完整入口。
+- **技术细节**: Ball joint 是最简单的约束类型，仅需位置惩罚，无需轴/角度计算；后续必须补齐 descriptor 入队、buffer 初始化、API 暴露和测试。
 
 ### 12. `2aecff6` — 6-DOF 机械臂测试（ROADMAP 2.8-2.9）
 - **改动**:
@@ -143,6 +150,7 @@
   - `CollisionShapeLibrary`: 便捷工厂方法
   - 预定义分组：TERRAIN, ROBOT_LINK, GRIPPER, OBJECT
 - **文件**: `collision_shapes.py`（117 行）
+- **完成度**: scaffold。当前仅是 Python descriptor/library，尚未接入 C++ collision buffer、LBVH/narrow phase、per-shape friction 或 collision mask。`should_collide()` 目前只检查 `group_a & group_b`，还没有使用每个 shape 的 `collision_mask`。
 
 ---
 
@@ -155,6 +163,7 @@
   - 总计 666 文件, 233 mesh (STL/OBJ), 6 ONNX policy, 19 URDF
   - 存储于 `PythonBindings/robotics/assets/`（已在 `.gitignore` 中）
 - **文件**: 667 个新文件
+- **审查意见**: 不建议把第三方机器人资产直接提交进主代码历史。该提交实际包含大量 OBJ/STL/USD/PNG/ONNX 二进制或大文本 mesh，`git show --stat` 显示 667 files / 4,421,118 insertions。应改为下载脚本、manifest、license 记录和 `.gitignore` 下的缓存目录，避免仓库膨胀和许可证风险。
 
 ### 16. `5bdf389` — Mass/inertia + Viewer（ROADMAP B.1, B.6）
 - **改动**:
@@ -176,11 +185,13 @@
 - **改动**: 加载 25-link, 24-joint H1 URDF，用碰撞基元代替 mesh，joint drive 保持初始姿态
 - **结果**: max drift 0.0016 rad, 所有 body 在地面以上
 - **文件**: `test_robot_h1_stand.py`
+- **完成度**: smoke test。该测试主要验证 joint drive 不发散，不等价于 Newton `robot_h1`：没有真实 floating base、mesh approximation 策略、严格速度阈值、接触调参或 batched `world_count=4`。
 
 ### 19. `acc14d3` — G1 人形站立（ROADMAP 4.9）
 - **改动**: 加载 31-link, 30-joint G1 URDF（23-DOF 变体）
 - **结果**: max drift 0.0002 rad, perfect stability
 - **文件**: `test_robot_g1_stand.py`
+- **完成度**: smoke test。当前断言较宽松，不能支撑“perfect stability”；应补充 root/base pose、body velocity、ground contact 和 world_count=4 验证。
 
 ### 20. `d2d9977` — ONNX Policy 推理（ROADMAP 5.7-5.9）
 - **改动**:
@@ -190,6 +201,7 @@
   - 回退模式：onnxruntime 不可用时纯 physics simulation
 - **结果**: action mean abs 0.1842, max drift 0.0745 rad
 - **文件**: `test_robot_policy.py`
+- **完成度**: inference smoke test。observation 目前主要填 joint positions，没有实现 Newton policy 所需的 body-frame base velocity、projected gravity、command、previous action、joint error、action reorder 等字段；所以只能说明 ONNX session 和 target setter 可运行，不能说明 policy transfer 已完成。
 
 ### 21. `b25b44b` — ANYmal + Franka + Allegro（ROADMAP 4.10, 6, 7）
 - **改动**:
@@ -198,6 +210,7 @@
   - Allegro Hand: 16-DOF 多指手（4 fingers × 4 links），16 revolute joints，drift 0.0000
 - **结果**: 三个测试全部通过，joint drift 均 < 0.001 rad
 - **文件**: `test_robot_anymal.py`, `test_robot_franka.py`, `test_robot_allegro.py`
+- **完成度**: proxy scenes。ANYmal/Franka/Allegro 测试覆盖了多关节链不崩溃，但没有复现 Newton 的真实资产、floating base、standing/walking observation、gripper/contact、hand cube retention 或 Panda pick-and-place。
 
 ### 22. `4c750bd` — Drop 接触测试（ROADMAP 3.6-3.8）
 - **改动**: Y-up 模式下 cube 从 1m 自由落体，落在地面 plane（`use_floor=True`）
@@ -218,9 +231,67 @@
 
 ---
 
+## 审查结论：当前 21 个提交是否合理
+
+总体结论：方向合理，但完成度描述过于乐观；当前分支更像“robotics layer 原型 + 多个 smoke tests”，还不是 Newton README basic/robotic examples 的可对齐复现。建议先修正能力边界，再继续扩展。
+
+### 合理的部分
+
+| 方向 | 结论 | 原因 |
+|------|------|------|
+| 先做 Python robotics wrapper | 合理 | 不侵入现有 cloth/soft/tet/rigid core，符合 ROADMAP “先手工场景验证，再 importer 自动化”的策略。 |
+| Z-up/gravity API | 合理 | Newton/MuJoCo/IsaacSim 都以 Z-up 为主，越早统一越好。 |
+| joint q/qd/body pose API | 合理 | 这是 control、observation、debug 和 RL 环境的最低接口。 |
+| joint drive energy | 合理但需验证 | 能快速做 position-control demos，但 penalty drive 对高 DOF chain 会有 drift 和刚度调参风险。 |
+| URDF parser + RobotBuilder | 合理 | 可支撑 UR10/G1/H1/ANYmal 的初步加载；但 importer 仍需要 frame transform 和 inertial/collision 的严肃验证。 |
+| 多个 headless smoke tests | 合理 | 可以防止接口级回归，适合作为后续 examples 的前置检查。 |
+
+### 必须修改的部分
+
+| 严重度 | 问题 | 修改建议 |
+|--------|------|----------|
+| 高 | `floor_normal` 只暴露未接入 core，Z-up `use_floor=True` 仍可能走 Y-up floor 逻辑 | 将 ROADMAP 0.3/A.4 标记为未完成；实现前不要用 Z-up floor 断言 Newton ground parity。下一步应把 ground energy、ground CCD、host evaluate 都改为 `dot(x - floor_origin, floor_normal)`。 |
+| 高 | Ball/Free joint 只有 enum/energy 分支，没有完整初始化/API 创建路径 | 补齐 `SolverInterface::add_ball_joint`、`init_sim_data` buffer 初始化、bindings、RobotSolver/RobotBuilder 支持和 `basic_joints` 测试。 |
+| 高 | 第三方资产直接入库 | 从主分支移除大资产提交，改为 `scripts/download_robot_assets.py` + manifest + license audit；只提交小型自制测试资产。 |
+| 高 | “H1/G1/ANYmal/Policy 已完成”的表述不准确 | 改成 smoke/proxy tests；真正 Newton parity 需要 world_count、floating base、contact、velocity threshold 和 observation 对齐。 |
+| 中 | `RobotBuilder` 声称 stdlib parser 零依赖，但 builder 运行时依赖 `scipy.spatial.transform.Rotation` | 用项目内 `physics_utils`/NumPy 实现 RPY→matrix，或把 scipy 写入依赖和 build docs。建议前者。 |
+| 中 | `RobotSolver.get_joint_index()` 永远返回 `-1` | 建立 joint metadata（name、parent、child、type、index）并在 add_joint 时维护。 |
+| 中 | `CollisionGroupConfig.should_collide()` 没用 shape-level mask | 改成 `shape_a.collision_group & shape_b.collision_mask` 和反向 mask 同时检查，并接入 C++。 |
+| 中 | `RobotSolver.add_rigid_body(mass/com)` 没有真正设置 COM/inertia tensor | 在 C++ `WorldData`/initializer 中补显式 mass、COM、inertia 覆盖；否则文档中 B.1 只能算部分完成。 |
+| 中 | ONNX policy observation 是占位向量 | 实现 `ArticulationView.compute_observation()`，按 Newton policy 字段逐项对齐后再评估 policy。 |
+| 低 | 多个测试文件位于 `PythonBindings/robotics/` 而非 `PythonBindings/tests/` | 若要纳入 CI，建议迁移到 `PythonBindings/tests/robotics/` 或配置 pytest discovery。 |
+
+### 建议的提交重组
+
+| 当前提交 | 建议 |
+|----------|------|
+| `26b6c54` 资产下载 | 不应保留为普通代码提交；替换为下载脚本和 manifest。 |
+| `18-21` 高级机器人 demo | 拆为 “proxy smoke test” 与 “Newton parity todo”，避免误导评审者以为阶段 4-7 已完成。 |
+| `14` collision shape descriptors | 保留，但标题改为 `Add Python collision shape descriptors`，不要写成 collision shape pipeline 已完成。 |
+| `11` Ball/Free | 保留，但追加 follow-up commit 补齐 API 和 init，否则不要把 `basic_joints` 标为 unblocked。 |
+
+---
+
 ## 之后的任务：接入强化学习流程
 
 当前平台已具备基本的机器人仿真能力（URDF 加载、关节约束/驱动、ONNX 推理闭环），但要成为跨平台高性能 RL 训练平台，还需以下工作：
+
+**未来计划评估**:
+- 当前计划的方向完整，但优先级需要前移“能力真实性验证”。如果 ground、Ball/Free、rigid-rigid contact、observation 仍是部分实现，直接做 Gym/API/性能优化会把错误接口固化。
+- Newton README 对齐应拆成两条线：先跑通 `basic_pendulum`、`robot_cartpole`、`basic_joints` 这类小场景；再做 UR10、quadruped、H1/G1/ANYmal。
+- RL 训练前最小闭环不是 Gym API，而是 batched articulation state/control + reset + observation parity + deterministic smoke tests。
+- 所有 “standing/policy” 结果必须区分 proxy scene 与真实资产 parity，否则无法判断和 Newton 的差距来自 importer、joint、contact 还是 policy observation。
+
+### 建议立即插入的修复阶段（Phase R）
+
+| 编号 | 任务 | 验收标准 |
+|------|------|----------|
+| R.1 | ground plane 真正支持 Z-up/任意 normal | `test_drop_contact.py` 在 Z-up 下启用 `use_floor=True`，cube resting height 由 z 坐标验证；ground CCD 与 energy 都不再硬编码 `floor.y`。 |
+| R.2 | Ball/Free joint 创建链路补齐 | `basic_joints` 可创建 revolute/prismatic/ball 三类 articulation；RobotBuilder 能处理 `floating/free` root。 |
+| R.3 | 移除大资产提交，改为下载脚本 | 仓库不包含第三方大 mesh/ONNX；脚本支持 sparse download、checksum/manifest、license 记录。 |
+| R.4 | RobotBuilder 去除 scipy 依赖或声明依赖 | 已实施最小修复：`robot_builder.py` 改为导入 `URDFParser`，并用 NumPy 实现 RPY→matrix，避免 clean venv 直接缺 scipy 失败。仍需补最小 URDF build smoke test。 |
+| R.5 | joint/body metadata | `get_joint_index(name)`、joint name list、body name list 可用；后续 action reorder 不再靠数组猜测。 |
+| R.6 | proxy/parity 测试分层 | 文件命名和断言区分 `test_robot_*_proxy.py` 与 `test_newton_*_parity.py`。 |
 
 ### 一、仿真性能与规模
 
@@ -282,11 +353,27 @@
 
 ### 优先级建议
 
-1. **P.1-P.2（批量环境）** + **O.1（ArticulationView）** — RL 训练的前提，无此则无法进行
-2. **O.2-O.7（观测接口）** — 与 policy 对接的必要组件
-3. **E.1-E.2（Gym API）** — 接入标准 RL 框架
-4. **A.1-A.3（hard constraint + armature + effort limit）** — 提升仿真稳定性
-5. **A.5-A.6（rigid-rigid contact + friction）** — 足式机器人必需
-6. **P.3-P.6（性能优化）** — 扩展到 100+ 环境时必需
-7. **E.3-E.7（跨平台 + CI + 文档）** — 生产化
-8. **X.1-X.6（高级特性）** — 竞争力提升
+1. **R.1-R.6（修复阶段）** — 先修正 ground、Ball/Free、资产、metadata 和测试分层，否则后续 parity 判断不可靠。
+2. **O.1 + P.1-P.2（ArticulationView + 批量环境 + world isolation）** — RL 训练的结构前提；建议先支持 4/16/100 worlds，而不是直接追求数千环境。
+3. **O.2-O.7（观测接口）** — 与 policy 对接的必要组件；必须逐字段和 Newton/MuJoCo 打印对齐。
+4. **A.2-A.4（armature + effort limit + ground plane shader）** — 比 hard constraint 更短路径，能提升 UR10/standing/policy smoke 的可信度。
+5. **A.5-A.6（rigid-rigid contact + friction）** — 足式机器人 standing/walking 的硬依赖，应在 H1/G1/ANYmal parity 前完成。
+6. **E.1-E.2（Gym API）** — 等 reset/observation/action/termination 稳定后再包装标准 RL 框架接口。
+7. **A.1（hard constraint joints）** — 作为稳定性升级单独推进；不要阻塞早期 proxy/parity examples，但要为高 DOF hand/legged robots 保留路线。
+8. **P.3-P.6（性能优化）** — 扩展到 100+ 环境时必需；在 correctness 未稳定前不要过早合并 kernel 或隐藏同步点。
+9. **E.3-E.7（跨平台 + CI + 文档）** — 生产化。
+10. **X.1-X.6（高级特性）** — 竞争力提升，放在 Newton README examples 基本对齐之后。
+
+### Newton README 对齐顺序建议
+
+| 顺序 | Example | 依赖 | 当前可做程度 |
+|------|---------|------|--------------|
+| 1 | `basic_pendulum` | revolute + Z-up + ground 可关闭 | 可立即做 proxy，若要 ground parity 需 R.1。 |
+| 2 | `robot_cartpole` | prismatic/revolute + joint q/qd + batch | 单 world proxy 已接近；100 worlds 需 O.1/P.1。 |
+| 3 | `basic_joints` | Ball joint + prismatic limit | 被 R.2 阻塞。 |
+| 4 | `robot_ur10` | importer + joint drive + batched target | 需要 RobotBuilder transform/inertia 修正和 ArticulationView。 |
+| 5 | `basic_shapes` | primitive collision shapes + rigid-rigid contact + Z-up floor | 被 A.5/R.1 阻塞。 |
+| 6 | `basic_urdf` / quadruped standing | floating base + contact + batch | 被 R.2/A.5/O.1 阻塞。 |
+| 7 | H1/G1/ANYmal standing | importer + floating base + contact tuning + velocity thresholds | 当前只有 proxy smoke，不能算 parity。 |
+| 8 | `robot_policy` / `anymal_c_walk` | observation parity + action reorder + reset + stable contact | 当前只有 ONNX smoke。 |
+| 9 | Allegro/Panda | high DOF drive + grasp contact + IK/gripper | 后期目标。 |

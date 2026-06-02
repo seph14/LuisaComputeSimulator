@@ -60,25 +60,27 @@ print(f"Loading G1 URDF: {G1_URDF}")
 model = URDFParser.parse(G1_URDF)
 print(f"  Links: {len(model.links)}, Joints: {len(model.joints)}, Root: {model.root_link}")
 
-# ── Setup solver (Y-up: gravity=(0,-9.8,0), floor at y=0) ──────────
+# ── Setup solver (configurable up-axis via set_up_axis) ─────────────
 rs = RobotSolver(backend_name=args.backend)
 rs.init_device()
+rs.setup_z_up(dt=1.0 / 300.0)
 config = rs.config
-config.set_gravity(lcs.Float3(0.0, -9.8, 0.0))
 config.set_use_floor(not args.disable_floor)
-config.set_implicit_dt(1.0 / 300.0)
-config.set_num_substep(3)
-config.set_nonlinear_iter_count(5)
-config.set_pcg_iter_count(200)
 
-# ── Build robot (no axis swap: both URDF and solver are Y-up) ───────
+# Read floor normal from config (auto-derived by set_up_axis)
+floor_normal = (float(config.get_floor_normal().x),
+                float(config.get_floor_normal().y),
+                float(config.get_floor_normal().z))
+height_axis = int(np.argmax(np.abs(floor_normal)))
+
+# ── Build robot (swap_yz=True: URDF Y-up → solver Z-up) ────────────
 builder = RobotBuilder(rs, model, fixed_base=True)
 builder.build(
     mesh_root=os.path.dirname(G1_URDF),
     base_translation=(0.0, 0.0, 0.0),
-    swap_yz=False,
+    swap_yz=True,
     floor_height=None if args.disable_auto_lift else 0.0,
-    floor_normal=(0.0, 1.0, 0.0),
+    floor_normal=floor_normal,
     floor_clearance=args.floor_clearance,
 )
 body_names = URDFParser.build_topology_order(model)
@@ -119,17 +121,18 @@ if args.headless:
     all_pass = True
     final_q = rs.get_all_joint_values()
 
-    # 1. All bodies above ground (Y-up: ground at y=0)
-    min_y = float("inf")
+    # 1. All bodies above ground (height axis from config)
+    min_h = float("inf")
     for bname in body_names:
         try:
             c = rs.get_body_center(bname)
-            min_y = min(min_y, float(c[1]))  # Y is height
+            min_h = min(min_h, float(c[height_axis]))
         except Exception:
             pass
-    above_ground = min_y > -0.01
+    above_ground = min_h > -0.01
+    axis_label = 'XYZ'[height_axis]
     print(f"  [{'PASS' if above_ground else 'FAIL'}] "
-          f"All bodies above ground (min_y={min_y:.4f})")
+          f"All bodies above ground (min_{axis_label}={min_h:.4f})")
     if not above_ground:
         all_pass = False
 
@@ -160,12 +163,12 @@ if args.headless:
           f"(staged: <{vel_threshold}, Newton target: <0.015)")
 
     # Sample positions
-    print(f"\n  Sample body states (Y-up):")
+    print(f"\n  Sample body states ({axis_label}-up):")
     for bname in body_names[:5]:
         try:
             c = rs.get_body_center(bname)
             v = rs.get_body_velocity(bname)
-            print(f"    {bname}: y={c[1]:.4f} (height), speed={body_speed(v):.4f}")
+            print(f"    {bname}: {axis_label}={c[height_axis]:.4f} (height), speed={body_speed(v):.4f}")
         except Exception:
             pass
 

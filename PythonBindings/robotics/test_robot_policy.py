@@ -95,22 +95,23 @@ print(f"  Links: {len(model.links)}, Joints: {len(model.joints)}, Root: {model.r
 
 rs = RobotSolver(backend_name=args.backend)
 rs.init_device()
+rs.setup_z_up(dt=1.0 / 300.0)
 config = rs.config
-# Y-up: gravity=(0,-9.8,0), floor at y=0, floor_normal=(0,1,0)
-config.set_gravity(lcs.Float3(0.0, -9.8, 0.0))
 config.set_use_floor(not args.disable_floor)
-config.set_implicit_dt(1.0 / 300.0)
-config.set_num_substep(3)
-config.set_nonlinear_iter_count(5)
-config.set_pcg_iter_count(200)
+
+# Read floor normal from config (auto-derived by set_up_axis)
+floor_normal = (float(config.get_floor_normal().x),
+                float(config.get_floor_normal().y),
+                float(config.get_floor_normal().z))
+height_axis = int(np.argmax(np.abs(floor_normal)))
 
 builder = RobotBuilder(rs, model, fixed_base=True)
 builder.build(
     mesh_root=os.path.dirname(URDF_PATH),
     base_translation=(0.0, 0.0, args.base_height),
-    swap_yz=False,  # both URDF and solver are Y-up
+    swap_yz=True,  # URDF Y-up → solver Z-up
     floor_height=0.0,
-    floor_normal=(0.0, 1.0, 0.0),
+    floor_normal=floor_normal,
     floor_clearance=0.05,
 )
 body_names = URDFParser.build_topology_order(model)
@@ -193,9 +194,9 @@ if args.headless:
 
         rs.step()
 
-        # Check termination: base height (Y-up)
+        # Check termination: base height (auto-detected axis)
         base_center = rs.get_body_center(model.root_link)
-        if base_center[1] < 0.1:
+        if base_center[height_axis] < 0.1:
             all_bodies_above_ground = False
             print(f"  WARNING: Base below 0.1m at frame {frame} (z={base_center[2]:.4f})")
             break

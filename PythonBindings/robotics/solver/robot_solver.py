@@ -48,12 +48,15 @@ class RobotSolver:
         """
         config = self.config
         config.set_up_axis(lcs.UpAxis.Z_UP)
-        config.set_use_floor(False)
         config.set_use_self_collision(False)
         config.set_implicit_dt(dt)
         config.set_num_substep(3)
         config.set_nonlinear_iter_count(5)
         config.set_pcg_iter_count(200)
+        # Note: set_use_floor is NOT set here — callers decide.
+        # The C++ ground_collision_energy / predict_position / CCD shaders
+        # all read floor_normal & gravity from SceneParams at runtime,
+        # so Z-up (floor_normal=(0,0,1), gravity=(0,0,-9.8)) works correctly.
 
     def add_rigid_body(self, name, mesh_vertices, mesh_faces,
                        tx=0.0, ty=0.0, tz=0.0,

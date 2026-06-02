@@ -366,6 +366,52 @@ namespace lcs::Initializer
 		LUISA_INFO("Surface edges count = {} (Total edges = {})", num_surface_edges, mesh_data->num_edges);
 		LUISA_INFO("Surface faces count = {} (Total faces = {})", num_surface_faces, mesh_data->num_faces);
 		validate_initial_mesh_overlaps(world_data, mesh_data, sim_data, surface_face_indices);
+
+		// Validate initial floor penetration: IPC barrier energy requires
+		// s = dist - thickness > 0 for log(s / d_hat) to be defined.
+		// Negative effective distance → undefined energy → NaN in PCG.
+		{
+			const auto& sp = get_scene_params();
+			if (sp.use_floor)
+			{
+				const float3 floor_origin = sp.floor;
+				const float3 floor_normal = sp.floor_normal;
+				const float  floor_d = luisa::dot(floor_origin, floor_normal);
+
+				for (uint vid = 0; vid < mesh_data->num_verts; ++vid)
+				{
+					// Skip non-surface and fixed vertices
+					if (mesh_data->sa_is_fixed[vid])
+						continue;
+
+					const uint   mesh_id = mesh_data->sa_vert_mesh_id[vid];
+					const float3 rest_x = mesh_data->sa_rest_x[vid];
+					const float  dist = luisa::dot(rest_x, floor_normal) - floor_d;
+
+					// Use default thickness/d_hat if contact buffers not yet populated
+					const float thickness = 0.0f; // vertices use offset buffer but we check rest config
+					const float d_hat = 0.001f;    // default contact range
+
+					const float effective_dist = dist - thickness;
+
+					if (effective_dist <= 0.0f)
+					{
+						LUISA_ERROR(
+							"Initial floor penetration: mesh '{}' (id={}), "
+							"vertex {} at rest=({:.3f},{:.3f},{:.3f}), "
+							"dist={:.4f} <= 0 (effective).\n"
+							"  Floor: origin=({:.3f},{:.3f},{:.3f}), normal=({:.3f},{:.3f},{:.3f}).\n"
+							"  IPC barrier requires s > 0. Increase floor_clearance or\n"
+							"  move bodies above the floor before init_solver().",
+							world_data[mesh_id].model_name, mesh_id, vid,
+							rest_x.x, rest_x.y, rest_x.z, dist,
+							floor_origin.x, floor_origin.y, floor_origin.z,
+							floor_normal.x, floor_normal.y, floor_normal.z);
+					}
+				}
+			}
+		}
+
 		sim_data->sa_contact_active_verts.resize(num_surface_verts);
 		sim_data->sa_contact_active_edges.resize(num_surface_edges);
 		sim_data->sa_contact_active_faces.resize(num_surface_faces);

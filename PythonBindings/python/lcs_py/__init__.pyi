@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy
 import pybind11_stubgen.typing_ext
 import typing
-__all__: list[str] = ['Cloth', 'ConstWorldData', 'FixedPointsType', 'Float3', 'MakeFixedPointsInterface', 'MaterialType', 'NewtonSolver', 'Particle', 'SceneParams', 'Rigid', 'Rod', 'SceneParams', 'Tetrahedral', 'WorldData']
+__all__: list[str] = ['Cloth', 'ConstWorldData', 'FixedPointsType', 'Float3', 'MakeFixedPointsInterface', 'MaterialType', 'NewtonSolver', 'Particle', 'SceneParams', 'Rigid', 'Rod', 'SceneParams', 'Tetrahedral', 'UpAxis', 'WorldData']
 class ConstWorldData:
     def get_fixed_point_indices(self) -> list:
         """
@@ -212,12 +212,26 @@ class MaterialType:
 class NewtonSolver:
     def __init__(self) -> None:
         ...
+    def add_ball_joint(self, body_a_registration: int, body_b_registration: int, anchor_a_local: numpy.ndarray[numpy.float32], anchor_b_local: numpy.ndarray[numpy.float32], stiffness_pos: float = 10000.0) -> None:
+        """
+        Add a ball (spherical) joint between two rigid bodies.
+        
+        The anchors are kept coincident while relative rotation is free.
+        Ball joints constrain only the translational offset between anchors.
+        """
     def add_fixed_joint(self, body_a_registration: int, body_b_registration: int, anchor_a_local: numpy.ndarray[numpy.float32], anchor_b_local: numpy.ndarray[numpy.float32], stiffness_pos: float = 10000.0, stiffness_rot: float = 1000.0) -> None:
         """
         Add a fixed joint between two rigid bodies.
         
         The local anchors are expressed in each body's rest local frame. The joint constrains
         both anchor coincidence and relative orientation.
+        """
+    def add_free_joint(self, body_a_registration: int, body_b_registration: int) -> None:
+        """
+        Add a free (floating) joint between two rigid bodies.
+        
+        A free joint imposes no constraint — used as a placeholder for
+        the root link of floating-base robots.
         """
     def add_prismatic_joint(self, body_a_registration: int, body_b_registration: int, anchor_a_local: numpy.ndarray[numpy.float32], anchor_b_local: numpy.ndarray[numpy.float32], axis_world: numpy.ndarray[numpy.float32], stiffness_pos: float = 10000.0, stiffness_rot: float = 1000.0, slide_min: float = ..., slide_max: float = ...) -> None:
         """
@@ -428,6 +442,8 @@ class SceneParams:
         ...
     def get_floor(self) -> Float3:
         ...
+    def get_floor_normal(self) -> Float3:
+        ...
     def get_gravity(self) -> Float3:
         ...
     def get_implicit_dt(self) -> float:
@@ -460,6 +476,8 @@ class SceneParams:
         """
         Return the current substep time step.
         """
+    def get_up_axis(self) -> UpAxis:
+        ...
     def get_use_ccd_linesearch(self) -> bool:
         ...
     def get_use_energy_linesearch(self) -> bool:
@@ -485,6 +503,8 @@ class SceneParams:
     def set_fix_scene(self, v: bool) -> None:
         ...
     def set_floor(self, v: Float3) -> None:
+        ...
+    def set_floor_normal(self, v: Float3) -> None:
         ...
     def set_gravity(self, v: Float3) -> None:
         ...
@@ -514,6 +534,8 @@ class SceneParams:
         ...
     def set_stiffness_dirichlet(self, v: float) -> None:
         ...
+    def set_up_axis(self, v: UpAxis) -> None:
+        ...
     def set_use_ccd_linesearch(self, v: bool) -> None:
         ...
     def set_use_energy_linesearch(self, v: bool) -> None:
@@ -528,6 +550,43 @@ class SceneParams:
         """
         Update the frame time step and derived substep time step.
         """
+class UpAxis:
+    """
+    Members:
+    
+      Y_UP
+    
+      Z_UP
+    """
+    Y_UP: typing.ClassVar[UpAxis]  # value = <UpAxis.Y_UP: 0>
+    Z_UP: typing.ClassVar[UpAxis]  # value = <UpAxis.Z_UP: 1>
+    __members__: typing.ClassVar[dict[str, UpAxis]]  # value = {'Y_UP': <UpAxis.Y_UP: 0>, 'Z_UP': <UpAxis.Z_UP: 1>}
+    def __eq__(self, other: typing.Any) -> bool:
+        ...
+    def __getstate__(self) -> int:
+        ...
+    def __hash__(self) -> int:
+        ...
+    def __index__(self) -> int:
+        ...
+    def __init__(self, value: int) -> None:
+        ...
+    def __int__(self) -> int:
+        ...
+    def __ne__(self, other: typing.Any) -> bool:
+        ...
+    def __repr__(self) -> str:
+        ...
+    def __setstate__(self, state: int) -> None:
+        ...
+    def __str__(self) -> str:
+        ...
+    @property
+    def name(self) -> str:
+        ...
+    @property
+    def value(self) -> int:
+        ...
 class WorldData:
     def add_fixed_point_by_indices(self, indices: numpy.ndarray[numpy.int32]) -> WorldData:
         ...

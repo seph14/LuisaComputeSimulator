@@ -388,7 +388,9 @@ namespace lcs::Initializer
 		lcs::SimulationData<std::vector>*							   sim_data,
 		const std::vector<lcs::FixedJointConstraintDesc>&			   fixed_joint_descs,
 		const std::vector<lcs::PrismaticJointConstraintDesc>&		   prismatic_joint_descs,
-		const std::vector<lcs::RevoluteJointConstraintDesc>&		   revolute_joint_descs)
+		const std::vector<lcs::RevoluteJointConstraintDesc>&		   revolute_joint_descs,
+		const std::vector<lcs::BallJointConstraintDesc>&			   ball_joint_descs,
+		const std::vector<lcs::FreeJointConstraintDesc>&			   free_joint_descs)
 	{
 		// Calculate number of energy element
 		constexpr bool cull_unused_constraints = true;
@@ -749,6 +751,10 @@ namespace lcs::Initializer
 					for (const auto& desc : prismatic_joint_descs)
 						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
 					for (const auto& desc : revolute_joint_descs)
+						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
+					for (const auto& desc : ball_joint_descs)
+						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
+					for (const auto& desc : free_joint_descs)
 						mark_joint_pair(desc.body_a_registration, desc.body_b_registration);
 
 					std::vector<uint> root_to_group(world_data.size(), 0u);
@@ -1380,6 +1386,60 @@ namespace lcs::Initializer
 				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_axis));
 				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Revolute));
 				joint_data.slide_limits.push_back(luisa::make_float2(desc.lower_angle, desc.upper_angle));
+			}
+
+			for (const auto& desc : ball_joint_descs)
+			{
+				uint4 idx_a{};
+				uint4 idx_b{};
+				if (!try_get_rigid_q_indices(desc.body_a_registration, idx_a)
+					|| !try_get_rigid_q_indices(desc.body_b_registration, idx_b))
+				{
+					continue;
+				}
+				uint8 idx_ext = { idx_a[0], idx_a[1], idx_a[2], idx_a[3], idx_b[0], idx_b[1], idx_b[2], idx_b[3] };
+				joint_data.constraint_indices.push_back(idx_ext);
+				joint_data.anchor_a_local.push_back(desc.anchor_a_local);
+				joint_data.anchor_b_local.push_back(desc.anchor_b_local);
+				joint_data.rest_position_delta.push_back(luisa::make_float3(0.0f));
+				joint_data.rest_rot_col0_a_to_b.push_back(luisa::make_float3(1.0f, 0.0f, 0.0f));
+				joint_data.rest_rot_col1_a_to_b.push_back(luisa::make_float3(0.0f, 1.0f, 0.0f));
+				joint_data.rest_rot_col2_a_to_b.push_back(luisa::make_float3(0.0f, 0.0f, 1.0f));
+				joint_data.axis_world.push_back(default_axis);
+				joint_data.axis_a_local.push_back(default_axis);
+				joint_data.axis_b_local.push_back(default_axis);
+				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, 0.0f));
+				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Ball));
+				joint_data.slide_limits.push_back(luisa::make_float2(-std::numeric_limits<float>::max(), std::numeric_limits<float>::max()));
+			}
+
+			// TODO(ROADMAP 2.7): Free joint currently allocates constraint slots but the shader
+			// evaluates to zero energy/gradient.  A future optimization should skip GPU dispatch
+			// for free joints entirely, or use a separate "noop" constraint type that is
+			// culled during adjacency-list construction.
+			for (const auto& desc : free_joint_descs)
+			{
+				uint4 idx_a{};
+				uint4 idx_b{};
+				if (!try_get_rigid_q_indices(desc.body_a_registration, idx_a)
+					|| !try_get_rigid_q_indices(desc.body_b_registration, idx_b))
+				{
+					continue;
+				}
+				uint8 idx_ext = { idx_a[0], idx_a[1], idx_a[2], idx_a[3], idx_b[0], idx_b[1], idx_b[2], idx_b[3] };
+				joint_data.constraint_indices.push_back(idx_ext);
+				joint_data.anchor_a_local.push_back(luisa::make_float3(0.0f));
+				joint_data.anchor_b_local.push_back(luisa::make_float3(0.0f));
+				joint_data.rest_position_delta.push_back(luisa::make_float3(0.0f));
+				joint_data.rest_rot_col0_a_to_b.push_back(luisa::make_float3(1.0f, 0.0f, 0.0f));
+				joint_data.rest_rot_col1_a_to_b.push_back(luisa::make_float3(0.0f, 1.0f, 0.0f));
+				joint_data.rest_rot_col2_a_to_b.push_back(luisa::make_float3(0.0f, 0.0f, 1.0f));
+				joint_data.axis_world.push_back(default_axis);
+				joint_data.axis_a_local.push_back(default_axis);
+				joint_data.axis_b_local.push_back(default_axis);
+				joint_data.stiffness.push_back(luisa::make_float2(0.0f));
+				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Free));
+				joint_data.slide_limits.push_back(luisa::make_float2(-std::numeric_limits<float>::max(), std::numeric_limits<float>::max()));
 			}
 
 			// Pre-allocate gradient/hessian buffers (filled by eval shader at runtime)

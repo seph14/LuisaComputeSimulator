@@ -732,6 +732,36 @@ struct PyNewtonBuilder
 		solver_ptr->add_revolute_joint(desc);
 	}
 
+	void add_ball_joint(const unsigned int							body_a_registration,
+		const unsigned int											body_b_registration,
+		py::array_t<float, py::array::c_style | py::array::forcecast> anchor_a_local,
+		py::array_t<float, py::array::c_style | py::array::forcecast> anchor_b_local,
+		float														stiffness_pos)
+	{
+		if (anchor_a_local.ndim() != 1 || anchor_a_local.shape(0) != 3
+			|| anchor_b_local.ndim() != 1 || anchor_b_local.shape(0) != 3)
+			throw std::runtime_error("Anchor vectors must be 1-D arrays of length 3.");
+		auto a = anchor_a_local.unchecked<1>();
+		auto b = anchor_b_local.unchecked<1>();
+
+		BallJointConstraintDesc desc;
+		desc.body_a_registration = body_a_registration;
+		desc.body_b_registration = body_b_registration;
+		desc.anchor_a_local = luisa::make_float3(a(0), a(1), a(2));
+		desc.anchor_b_local = luisa::make_float3(b(0), b(1), b(2));
+		desc.stiffness_pos = stiffness_pos;
+		solver_ptr->add_ball_joint(desc);
+	}
+
+	void add_free_joint(const unsigned int body_a_registration,
+		const unsigned int				  body_b_registration)
+	{
+		FreeJointConstraintDesc desc;
+		desc.body_a_registration = body_a_registration;
+		desc.body_b_registration = body_b_registration;
+		solver_ptr->add_free_joint(desc);
+	}
+
 	// Return simulation results as a tuple of (vertices_list, faces_list) of numpy arrays.
 	// Uses memcpy for efficient data transfer.
 	py::tuple get_sim_result()
@@ -1255,6 +1285,23 @@ PYBIND11_MODULE(lcs_py, m)
 			"Add a revolute/hinge joint between two rigid bodies.\n\n"
 			"The anchors are kept coincident while axis_a_local and axis_b_local are aligned,\n"
 			"leaving rotation around the hinge axis free.")
+		.def("add_ball_joint",
+			&PyNewtonBuilder::add_ball_joint,
+			py::arg("body_a_registration"),
+			py::arg("body_b_registration"),
+			py::arg("anchor_a_local"),
+			py::arg("anchor_b_local"),
+			py::arg("stiffness_pos") = 1.0e4f,
+			"Add a ball (spherical) joint between two rigid bodies.\n\n"
+			"The anchors are kept coincident while relative rotation is free.\n"
+			"Ball joints constrain only the translational offset between anchors.")
+		.def("add_free_joint",
+			&PyNewtonBuilder::add_free_joint,
+			py::arg("body_a_registration"),
+			py::arg("body_b_registration"),
+			"Add a free (floating) joint between two rigid bodies.\n\n"
+			"A free joint imposes no constraint — used as a placeholder for\n"
+			"the root link of floating-base robots.")
 		.def("query_local_vid_from_global_vid",
 			&PyNewtonBuilder::query_local_vid_from_global_vid,
 			py::arg("global_vid"),

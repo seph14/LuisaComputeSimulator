@@ -12,7 +12,9 @@ namespace lcs::Initializer
 		lcs::SimulationData<std::vector>*							   sim_data,
 		const std::vector<lcs::FixedJointConstraintDesc>&			   fixed_joint_descs,
 		const std::vector<lcs::PrismaticJointConstraintDesc>&		   prismatic_joint_descs,
-		const std::vector<lcs::RevoluteJointConstraintDesc>&		   revolute_joint_descs);
+		const std::vector<lcs::RevoluteJointConstraintDesc>&		   revolute_joint_descs,
+		const std::vector<lcs::BallJointConstraintDesc>&			   ball_joint_descs,
+		const std::vector<lcs::FreeJointConstraintDesc>&			   free_joint_descs);
 	void upload_sim_buffers(luisa::compute::Device&	 device,
 		luisa::compute::Stream&						 stream,
 		lcs::SimulationData<std::vector>*			 input_data,

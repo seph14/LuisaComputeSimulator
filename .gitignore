@@ -34,4 +34,4 @@ ext/*
 .obsidian
 lcs_config.ini
 .workbuddy
-/todorobotics/assets/
+/PythonBindings/robotics/assets/

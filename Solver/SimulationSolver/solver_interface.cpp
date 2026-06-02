@@ -73,7 +73,9 @@ namespace lcs
 				host_sim_data,
 				fixed_joint_descs,
 				prismatic_joint_descs,
-				revolute_joint_descs);
+				revolute_joint_descs,
+				ball_joint_descs,
+				free_joint_descs);
 			lcs::Initializer::upload_sim_buffers(device, stream, host_sim_data, sim_data);
 			lcs::Initializer::resize_pcg_data(device, stream, host_mesh_data, host_sim_data, sim_data);
 		}
@@ -1518,7 +1520,8 @@ namespace lcs
 		{
 			ground_collision_energy->device_compute_energy(stream,
 				curr_x,
-				get_scene_params().floor.y,
+				get_scene_params().floor,
+				get_scene_params().floor_normal,
 				get_scene_params().use_floor,
 				get_scene_params().stiffness_collision,
 				get_scene_params().contact_energy_type,

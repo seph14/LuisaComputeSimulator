@@ -173,7 +173,9 @@ namespace lcs
 		std::vector<Initializer::WorldData>		  world_data;
 		std::vector<FixedJointConstraintDesc>	  fixed_joint_descs;
 		std::vector<PrismaticJointConstraintDesc> prismatic_joint_descs;
-		std::vector<RevoluteJointConstraintDesc>  revolute_joint_descs; // kept for API compat; all stored in JointConstraint
+		std::vector<RevoluteJointConstraintDesc>  revolute_joint_descs;
+		std::vector<BallJointConstraintDesc>	  ball_joint_descs;
+		std::vector<FreeJointConstraintDesc>	  free_joint_descs;
 
 		SolverData	 solver_data;
 		SolverHelper solver_helper;
@@ -249,6 +251,14 @@ namespace lcs
 		void add_revolute_joint(const RevoluteJointConstraintDesc& desc)
 		{
 			revolute_joint_descs.push_back(desc);
+		}
+		void add_ball_joint(const BallJointConstraintDesc& desc)
+		{
+			ball_joint_descs.push_back(desc);
+		}
+		void add_free_joint(const FreeJointConstraintDesc& desc)
+		{
+			free_joint_descs.push_back(desc);
 		}
 		// uint register_world_data_from_array(const std::string_view& name, const std::vector<std::array<float, 3>>& vertices, const std::vector<std::array<uint, 3>>& faces)
 		// {

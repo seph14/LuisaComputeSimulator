@@ -100,8 +100,8 @@ class ObservationBuilder:
         obs[3:6] = base_ang_body.astype(np.float32)
 
         # ── 3. Projected gravity in body frame ─────────────────────
-        # Gravity vector in world frame (Z-up: (0, 0, -9.8))
-        gravity_world = np.array([0.0, 0.0, -9.8], dtype=np.float64)
+        # Gravity vector in world frame (Y-up: (0, -9.8, 0))
+        gravity_world = np.array([0.0, -9.8, 0.0], dtype=np.float64)
         gravity_body = self._quat_rotate_inv(base_quat, gravity_world)
         obs[6:9] = gravity_body.astype(np.float32)
 

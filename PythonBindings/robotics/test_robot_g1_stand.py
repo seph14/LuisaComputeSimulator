@@ -60,21 +60,25 @@ print(f"Loading G1 URDF: {G1_URDF}")
 model = URDFParser.parse(G1_URDF)
 print(f"  Links: {len(model.links)}, Joints: {len(model.joints)}, Root: {model.root_link}")
 
-# ── Setup solver ────────────────────────────────────────────────────
+# ── Setup solver (Y-up: gravity=(0,-9.8,0), floor at y=0) ──────────
 rs = RobotSolver(backend_name=args.backend)
 rs.init_device()
-rs.setup_z_up(dt=1.0 / 300.0)
 config = rs.config
+config.set_gravity(lcs.Float3(0.0, -9.8, 0.0))
 config.set_use_floor(not args.disable_floor)
+config.set_implicit_dt(1.0 / 300.0)
+config.set_num_substep(3)
+config.set_nonlinear_iter_count(5)
+config.set_pcg_iter_count(200)
 
-# ── Build robot ─────────────────────────────────────────────────────
+# ── Build robot (no axis swap: both URDF and solver are Y-up) ───────
 builder = RobotBuilder(rs, model, fixed_base=True)
 builder.build(
     mesh_root=os.path.dirname(G1_URDF),
     base_translation=(0.0, 0.0, 0.0),
-    swap_yz=not args.no_swap_yz,
+    swap_yz=False,
     floor_height=None if args.disable_auto_lift else 0.0,
-    floor_normal=vec_xyz(config.get_floor_normal()),
+    floor_normal=(0.0, 1.0, 0.0),
     floor_clearance=args.floor_clearance,
 )
 body_names = URDFParser.build_topology_order(model)
@@ -115,18 +119,17 @@ if args.headless:
     all_pass = True
     final_q = rs.get_all_joint_values()
 
-    # 1. All bodies above ground
-    floor_n = np.asarray(vec_xyz(config.get_floor_normal()), dtype=np.float64)
-    min_z = float("inf")
+    # 1. All bodies above ground (Y-up: ground at y=0)
+    min_y = float("inf")
     for bname in body_names:
         try:
             c = rs.get_body_center(bname)
-            min_z = min(min_z, float(np.dot(c, floor_n)))
+            min_y = min(min_y, float(c[1]))  # Y is height
         except Exception:
             pass
-    above_ground = min_z > -0.01
+    above_ground = min_y > -0.01
     print(f"  [{'PASS' if above_ground else 'FAIL'}] "
-          f"All bodies above ground (min_z={min_z:.4f})")
+          f"All bodies above ground (min_y={min_y:.4f})")
     if not above_ground:
         all_pass = False
 
@@ -157,12 +160,12 @@ if args.headless:
           f"(staged: <{vel_threshold}, Newton target: <0.015)")
 
     # Sample positions
-    print(f"\n  Sample body states:")
+    print(f"\n  Sample body states (Y-up):")
     for bname in body_names[:5]:
         try:
             c = rs.get_body_center(bname)
             v = rs.get_body_velocity(bname)
-            print(f"    {bname}: z={c[2]:.4f}, speed={body_speed(v):.4f}")
+            print(f"    {bname}: y={c[1]:.4f} (height), speed={body_speed(v):.4f}")
         except Exception:
             pass
 

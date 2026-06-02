@@ -36,19 +36,30 @@ class ObservationBuilder:
 
     def __init__(self, robot_solver, body_names: list,
                  dof_joint_indices: list,
-                 base_body_name: str = None):
+                 base_body_name: str = None,
+                 gravity: np.ndarray = None):
         """
         Args:
             robot_solver: RobotSolver instance (after init_solver).
             body_names: List of body names for body-frame queries.
             dof_joint_indices: Joint indices (flat, global) in DOF order.
             base_body_name: Name of the base/root body. If None, uses first body.
+            gravity: World-frame gravity vector [3]. If None, reads from
+                     solver config (supports Y-up, Z-up, or custom).
         """
         self._rs = robot_solver
         self._body_names = list(body_names)
         self._dof_indices = list(dof_joint_indices)
         self._num_dof = len(dof_joint_indices)
         self._base_body = base_body_name if base_body_name else body_names[0]
+
+        # Gravity: auto-detect from solver config if not provided
+        if gravity is not None:
+            self._gravity = np.asarray(gravity, dtype=np.float64)
+        else:
+            g = robot_solver.config.get_gravity()
+            self._gravity = np.array([float(g.x), float(g.y), float(g.z)],
+                                     dtype=np.float64)
 
         # Full observation dimension: 12 + 3 * num_dof
         self._obs_dim = 12 + 3 * self._num_dof
@@ -100,9 +111,8 @@ class ObservationBuilder:
         obs[3:6] = base_ang_body.astype(np.float32)
 
         # ── 3. Projected gravity in body frame ─────────────────────
-        # Gravity vector in world frame (Y-up: (0, -9.8, 0))
-        gravity_world = np.array([0.0, -9.8, 0.0], dtype=np.float64)
-        gravity_body = self._quat_rotate_inv(base_quat, gravity_world)
+        # Gravity direction auto-detected from solver config (supports Y-up/Z-up/custom)
+        gravity_body = self._quat_rotate_inv(base_quat, self._gravity)
         obs[6:9] = gravity_body.astype(np.float32)
 
         # ── 4. Command velocity ────────────────────────────────────

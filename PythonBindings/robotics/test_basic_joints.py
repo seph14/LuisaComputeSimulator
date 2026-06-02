@@ -248,7 +248,7 @@ def main():
 
     else:
         from robotics.render.robot_viewer import RobotViewer
-        viewer = RobotViewer(rs)
+        viewer = RobotViewer(rs, rs.config, OUTPUT_DIR)
         viewer.show()
 
     rs.cleanup()

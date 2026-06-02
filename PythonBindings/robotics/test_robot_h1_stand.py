@@ -71,27 +71,26 @@ print(f"Loading H1 URDF: {H1_URDF}")
 model = URDFParser.parse(H1_URDF)
 print(f"  Links: {len(model.links)}, Joints: {len(model.joints)}, Root: {model.root_link}")
 
-# ── Setup solver (Y-up: gravity=(0,-9.8,0), floor at y=0) ──────────
+# ── Setup solver (configurable up-axis via set_up_axis) ─────────────
 rs = RobotSolver(backend_name=args.backend)
 rs.init_device()
-
+rs.setup_z_up(dt=1.0 / 300.0)
 config = rs.config
-# Use Y-up directly (solver native): gravity=(0,-9.8,0), floor_normal=(0,1,0)
-config.set_gravity(lcs.Float3(0.0, -9.8, 0.0))
 config.set_use_floor(not args.disable_floor)
-config.set_implicit_dt(1.0 / 300.0)
-config.set_num_substep(3)
-config.set_nonlinear_iter_count(5)
-config.set_pcg_iter_count(200)
 
-# ── Build robot (no axis swap — URDF is Y-up, solver is Y-up) ──────
+# Read floor normal from config (auto-derived by set_up_axis)
+floor_normal = (float(config.get_floor_normal().x),
+                float(config.get_floor_normal().y),
+                float(config.get_floor_normal().z))
+
+# ── Build robot (swap_yz=True: URDF Y-up → solver Z-up) ────────────
 builder = RobotBuilder(rs, model, fixed_base=True)
 builder.build(
     mesh_root=os.path.dirname(H1_URDF),
     base_translation=(0.0, 0.0, args.base_height),
-    swap_yz=False,  # no swap: both URDF and solver are Y-up
+    swap_yz=True,
     floor_height=None if args.disable_auto_lift else 0.0,
-    floor_normal=(0.0, 1.0, 0.0),  # Y-up
+    floor_normal=floor_normal,
     floor_clearance=args.floor_clearance,
 )
 body_names = URDFParser.build_topology_order(model)
@@ -116,11 +115,14 @@ for j in range(n_joints):
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 rs.save_result(os.path.join(OUTPUT_DIR, "h1_stand_init.obj"))
 
-# ── Floor info (Y-up: floor at y=0) ─────────────────────────────────
-floor_normal = (0.0, 1.0, 0.0)  # Y-up
-floor_height = 0.0
+# ── Floor info (auto-detected from config) ──────────────────────────
+floor_height = float(np.dot(
+    np.asarray([float(config.get_floor().x),
+                float(config.get_floor().y),
+                float(config.get_floor().z)]),
+    np.asarray(floor_normal)))
 initial_min_floor = scene_min_floor_coord(rs, body_names, floor_normal)
-print(f"  Floor (Y-up): height={floor_height:.4f}, min_coord={initial_min_floor:.4f}")
+print(f"  Floor: height={floor_height:.4f}, normal={floor_normal}, min={initial_min_floor:.4f}")
 
 # ── Simulate ────────────────────────────────────────────────────────
 if args.headless:
@@ -176,14 +178,16 @@ if args.headless:
           f"Body velocity: max={max_vel:.4f} m/s "
           f"(staged: <{vel_threshold}, Newton target: <0.005)")
 
-    # 4. Sample body Y-coordinates (Y-up: height is Y)
-    print(f"\n  Sample body positions (Y-up, world 0):")
+    # 4. Sample body positions
+    height_axis = int(np.argmax(np.abs(floor_normal)))  # 1=Y-up, 2=Z-up
+    axis_label = 'XYZ'[height_axis]
+    print(f"\n  Sample body positions ({axis_label}-up, world 0):")
     for bname in body_names[:5]:
         try:
             c = rs.get_body_center(bname)
             v = rs.get_body_velocity(bname)
             s = float(np.sqrt(np.sum(np.array(v[:3])**2)))
-            print(f"    {bname}: y={c[1]:.4f} (height), speed={s:.4f}")
+            print(f"    {bname}: {axis_label}={c[height_axis]:.4f} (height), speed={s:.4f}")
         except Exception:
             pass
 

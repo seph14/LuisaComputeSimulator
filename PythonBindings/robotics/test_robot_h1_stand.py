@@ -2,11 +2,11 @@
 H1 humanoid standing test (ROADMAP 4.1-4.8).
 
 Loads H1 URDF, builds the articulated body chain, and holds initial pose
-using joint position drive.  Uses collision primitives for geometry
-(sphere/cylinder) since mesh loading requires .dae support.
+using joint position drive. Uses the URDF kinematic tree to place links and
+collision primitives for geometry where available.
 
 Usage:
-    PYTHONPATH=build/bin .venv/bin/python PythonBindings/robotics/test_robot_h1_stand.py --headless --advance_frames 120
+    PYTHONPATH=build/bin .venv/bin/python PythonBindings/robotics/test_robot_h1_stand.py --headless --advance_frames 500
 """
 
 import os, sys, argparse, platform
@@ -17,23 +17,56 @@ sys.path.insert(0, os.path.join(_SCRIPT_DIR, ".."))
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", "tests"))
 
 import lcs_py as lcs
-from utils.test_script_path import PROJECT_ROOT
 
 from robotics.solver.robot_solver import RobotSolver
-from robotics.parser.urdf_parser import URDFParser, URDFRobotModel
-from robotics.utils.joint_utils import log_joint_states, print_joint_summary
+from robotics.parser.urdf_parser import URDFParser
+from robotics.robot_builder import RobotBuilder
+from robotics.utils.joint_utils import print_joint_summary
 
 parser = argparse.ArgumentParser(description="H1 standing demo")
 parser.add_argument("--backend", type=str,
                     default="metal" if platform.system() == "Darwin" else "cuda")
 parser.add_argument("--headless", action="store_true")
-parser.add_argument("--advance_frames", type=int, default=120)
+parser.add_argument("--advance_frames", type=int, default=500)
+parser.add_argument("--base_height", type=float, default=0.0,
+                    help="Extra world Z offset applied after auto floor lift")
+parser.add_argument("--floor_clearance", type=float, default=0.01,
+                    help="Auto-lift clearance above the floor")
+parser.add_argument("--disable_auto_lift", action="store_true",
+                    help="Disable automatic lift to floor + clearance")
+parser.add_argument("--no_swap_yz", action="store_true",
+                    help="Disable the default URDF Y/Z axis swap")
+parser.add_argument("--floating_base", action="store_true",
+                    help="Do not pin the root link. Less stable until contact parity is complete.")
+parser.add_argument("--disable_floor", action="store_true",
+                    help="Disable ground plane contact")
 args = parser.parse_args()
 
 FRAMES = args.advance_frames
 ASSETS = os.path.join(_SCRIPT_DIR, "assets")
 H1_URDF = os.path.join(ASSETS, "unitree_h1", "urdf", "h1.urdf")
 OUTPUT_DIR = os.path.join(_SCRIPT_DIR, "..", "tests", "output")
+
+
+def vec_xyz(vec):
+    return (float(vec.x), float(vec.y), float(vec.z))
+
+
+def scene_min_floor_coord(robot_solver, names, floor_normal):
+    normal = np.asarray(floor_normal, dtype=np.float64)
+    norm = np.linalg.norm(normal)
+    if norm <= 0.0:
+        normal = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        normal = normal / norm
+    min_coord = float("inf")
+    for body_name in names:
+        try:
+            verts = robot_solver.get_body_vertices(body_name)
+            min_coord = min(min_coord, float(np.min(verts @ normal)))
+        except Exception:
+            pass
+    return min_coord
 
 # ── Parse URDF ──────────────────────────────────────────────────────
 print(f"Loading H1 URDF: {H1_URDF}")
@@ -44,84 +77,48 @@ print(f"  Links: {len(model.links)}, Joints: {len(model.joints)}, Root: {model.r
 rs = RobotSolver(backend_name=args.backend)
 rs.init_device()
 rs.setup_z_up(dt=1.0 / 300.0)
+if not args.no_swap_yz:
+    rs.config.set_up_axis(lcs.UpAxis.Y_UP)
+rs.config.set_use_floor(not args.disable_floor)
 
-cube_path = os.path.join(PROJECT_ROOT, "Resources", "InputMesh", "cube.obj")
-cube = __import__('trimesh').load(cube_path, process=False)
-
-# ── Build bodies using collision primitives ─────────────────────────
-# For each link, use its collision geometry (sphere/cylinder) or cube fallback
-link_order = URDFParser.build_topology_order(model)
-print(f"  Topo order: {len(link_order)} links")
-
-body_names = []
-for link_name in link_order:
-    link = model.links.get(link_name)
-    if link is None:
-        continue
-
-    # Determine body size from collision geometry
-    scale = (0.03, 0.03, 0.03)  # default small cube
-    if link.collisions:
-        col = link.collisions[0]
-        if col.geometry_type == "sphere":
-            r = col.geometry_data.get("radius", 0.03)
-            scale = (r * 2, r * 2, r * 2)
-        elif col.geometry_type == "cylinder":
-            r = col.geometry_data.get("radius", 0.02)
-            l = col.geometry_data.get("length", 0.05)
-            scale = (r * 2, r * 2, l)
-        elif col.geometry_type == "box":
-            s = col.geometry_data.get("size", [0.03, 0.03, 0.03])
-            scale = tuple(s)
-
-    # Approximate position from joint chain (starting near origin)
-    # Use origin_xyz from the joint connecting this link to its parent
-    tx, ty, tz = 0.0, 0.0, 1.0  # start at 1m height
-    is_fixed = (link_name == model.root_link)
-
-    rid = rs.add_rigid_body(link_name, cube.vertices, cube.faces,
-                            tx=tx, ty=ty, tz=tz,
-                            sx=scale[0], sy=scale[1], sz=scale[2],
-                            fixed=is_fixed)
-    body_names.append(link_name)
-
-# ── Create joints ───────────────────────────────────────────────────
-joint_count = 0
-for joint in model.joints:
-    p_id = rs._body_ids.get(joint.parent)
-    c_id = rs._body_ids.get(joint.child)
-    if p_id is None or c_id is None:
-        continue
-
-    anchor_parent = joint.origin_xyz.astype(np.float64)
-    anchor_child = np.zeros(3, dtype=np.float64)
-    axis = joint.axis.astype(np.float64)
-    jtype = joint.joint_type.lower()
-
-    if jtype in ("revolute", "continuous"):
-        rs.add_revolute_joint(joint.parent, joint.child,
-                              anchor_parent, anchor_child, axis,
-                              stiffness_pos=1.0e5, stiffness_axis=5.0e3)
-    elif jtype == "prismatic":
-        rs.add_prismatic_joint(joint.parent, joint.child,
-                               anchor_parent, anchor_child, axis,
-                               stiffness_pos=1.0e5, stiffness_rot=1.0e4)
-    elif jtype == "fixed":
-        rs._solver.add_fixed_joint(p_id, c_id, anchor_parent, anchor_child,
-                                   stiffness_pos=1.0e6, stiffness_rot=1.0e5)
-    joint_count += 1
-
-print(f"  Created {joint_count} joints")
+# ── Build bodies and joints from URDF topology ───────────────────────
+builder = RobotBuilder(rs, model, fixed_base=not args.floating_base)
+builder.build(
+    mesh_root=os.path.dirname(H1_URDF),
+    base_translation=(0.0, 0.0, args.base_height),
+    swap_yz=not args.no_swap_yz,
+    floor_height=None if args.disable_auto_lift else 0.0,
+    floor_normal=vec_xyz(rs.config.get_floor_normal()),
+    floor_clearance=args.floor_clearance,
+)
+body_names = URDFParser.build_topology_order(model)
+print(f"  Built {len(builder.link_body_ids)} bodies and {len(model.joints)} URDF joints")
+print(
+    f"  Extra base height: {args.base_height:.3f} m, "
+    f"auto_lift={not args.disable_auto_lift}, clearance={args.floor_clearance:.3f} m, "
+    f"swap_yz={not args.no_swap_yz}, fixed_base={not args.floating_base}, floor={not args.disable_floor}"
+)
 
 rs.init_solver()
 print_joint_summary(rs.solver)
+
+floor_normal = vec_xyz(rs.config.get_floor_normal())
+floor_height = float(
+    np.dot(np.asarray(vec_xyz(rs.config.get_floor()), dtype=np.float64),
+           np.asarray(floor_normal, dtype=np.float64))
+)
+initial_min_floor = scene_min_floor_coord(rs, body_names, floor_normal)
+print(
+    f"  Initial scene min floor coord: {initial_min_floor:.4f} m "
+    f"(floor={floor_height:.4f}, clearance={initial_min_floor - floor_height:.4f} m, normal={floor_normal})"
+)
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 rs.save_result(os.path.join(OUTPUT_DIR, "h1_stand_init.obj"))
 
 # ── Drive all joints to hold initial position ───────────────────────
-KP = 500.0
-KD = 20.0
+KP = 150.0
+KD = 5.0
 n_joints = rs.get_joint_count()
 initial_q = rs.get_all_joint_values()
 print(f"  Initial joint positions: {[f'{v:.4f}' for v in initial_q]}")
@@ -135,7 +132,7 @@ for j in range(n_joints):
 if args.headless:
     for frame in range(FRAMES):
         rs.step()
-        if frame % 30 == 0:
+        if frame % 50 == 0:
             q = rs.get_all_joint_values()
             print(f"  frame {frame:4d}: {[f'{v:.4f}' for v in q[:6]]}...")
 
@@ -145,16 +142,11 @@ if args.headless:
     print("\n--- Validation ---")
     final_q = rs.get_all_joint_values()
 
-    # Check all bodies are above ground (z > 0 in Z-up)
-    all_above_ground = True
-    for name in body_names[:10]:  # check first 10 links
-        try:
-            center = rs.get_body_center(name)
-            if center[2] < -0.1:
-                print(f"  FAIL: {name} z={center[2]:.4f} below ground!")
-                all_above_ground = False
-        except Exception:
-            pass
+    # Check all vertices are above the configured floor plane.
+    final_min_floor = scene_min_floor_coord(rs, body_names, floor_normal)
+    all_above_ground = final_min_floor >= floor_height - 1.0e-3
+    if not all_above_ground:
+        print(f"  FAIL: scene min floor coord={final_min_floor:.4f} below floor={floor_height:.4f}!")
 
     # Check joints haven't diverged too far from initial
     max_drift = max(abs(final_q[i] - initial_q[i]) for i in range(n_joints))
@@ -163,7 +155,7 @@ if args.headless:
 
     # Check body velocities are reasonable
     if all_above_ground:
-        print("  All bodies above ground: PASSED")
+        print(f"  All vertices above ground: PASSED (min_floor_coord={final_min_floor:.4f})")
     print(f"  Joint drift check: PASSED (max={max_drift:.4f})")
     print("H1 standing test PASSED")
 

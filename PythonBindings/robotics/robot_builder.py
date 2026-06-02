@@ -29,11 +29,13 @@ class RobotBuilder:
     """
 
     def __init__(self, robot_solver, model: URDFRobotModel,
-                 collapse_fixed_joints: bool = False):
+                 collapse_fixed_joints: bool = False,
+                 fixed_base: bool = True):
         self._rs = robot_solver
         self._solver = robot_solver.solver
         self._model = model
         self._collapse_fixed = collapse_fixed_joints
+        self._fixed_base = fixed_base
 
         # Registration IDs keyed by link name
         self._link_body_ids: dict = {}
@@ -50,7 +52,12 @@ class RobotBuilder:
 
     def build(self, mesh_root: str = "",
               default_mass: float = 1.0,
-              default_inertia: tuple = (0.1, 0.1, 0.1)):
+              default_inertia: tuple = (0.1, 0.1, 0.1),
+              base_translation: tuple = (0.0, 0.0, 0.0),
+              swap_yz: bool = False,
+              floor_height: float | None = None,
+              floor_normal: tuple = (0.0, 0.0, 1.0),
+              floor_clearance: float = 0.01):
         """
         Build the full robot scene.
 
@@ -58,6 +65,12 @@ class RobotBuilder:
             mesh_root: Root directory for resolving mesh paths in URDF.
             default_mass: Fallback mass for links without inertial data.
             default_inertia: Fallback (ixx, iyy, izz) for links without inertia.
+            base_translation: World-space translation applied to the root link.
+            swap_yz: Swap URDF Y/Z axes before registering bodies and joints.
+            floor_height: If set, lift the robot along floor_normal so its
+                minimum signed floor coordinate is floor_height + floor_clearance.
+            floor_normal: Plane normal used by floor_height/auto-lift.
+            floor_clearance: Clearance used with floor_height.
         """
         # Step 1: Create bodies for all links in topological order
         topo_order = URDFParser.build_topology_order(self._model)
@@ -66,8 +79,17 @@ class RobotBuilder:
 
         # Pre-compute world-frame transforms by walking the tree
         link_transforms = self._compute_link_transforms()
+        axis_xform = self._axis_transform_matrix(swap_yz)
 
         cube_mesh = self._get_default_cube_mesh()
+        body_specs = []
+        floor_n = np.asarray(floor_normal, dtype=np.float64)
+        n_norm = np.linalg.norm(floor_n)
+        if n_norm <= 0.0:
+            floor_n = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+        else:
+            floor_n = floor_n / n_norm
+        min_floor_coord = np.inf
 
         for link_name in topo_order:
             link = self._model.links.get(link_name)
@@ -75,11 +97,16 @@ class RobotBuilder:
                 continue
 
             # Get world-frame transform for this link
-            T = link_transforms.get(link_name, np.eye(4))
-            tx, ty, tz = T[0, 3], T[1, 3], T[2, 3]
+            T = self._apply_axis_transform(link_transforms.get(link_name, np.eye(4)), axis_xform)
 
             # Use collision mesh if available, else visual mesh, else cube
             mesh = self._get_link_mesh(link, mesh_root, cube_mesh)
+            mesh = self._apply_mesh_axis_transform(mesh, axis_xform)
+
+            verts_h = np.column_stack([np.asarray(mesh.vertices, dtype=np.float64), np.ones(len(mesh.vertices))])
+            world_verts = (T @ verts_h.T).T[:, :3]
+            if len(world_verts):
+                min_floor_coord = min(min_floor_coord, float(np.min(world_verts @ floor_n)))
 
             # Mass / inertia from URDF or defaults
             mass = default_mass
@@ -87,13 +114,31 @@ class RobotBuilder:
                 mass = link.inertial.mass
 
             # Determine if this link is the world-fixed base
-            is_fixed = (link_name == self._model.root_link and
+            is_fixed = (self._fixed_base and link_name == self._model.root_link and
                         not self._has_floating_joint())
+
+            body_specs.append((link_name, mesh, T, mass, is_fixed))
+
+        lift_vec = np.zeros(3, dtype=np.float64)
+        if floor_height is not None and np.isfinite(min_floor_coord):
+            min_floor_coord += float(np.dot(np.asarray(base_translation, dtype=np.float64), floor_n))
+            lift = max(0.0, float(floor_height) + float(floor_clearance) - min_floor_coord)
+            lift_vec = floor_n * lift
+
+        for link_name, mesh, T, mass, is_fixed in body_specs:
+            tx = T[0, 3] + float(base_translation[0])
+            ty = T[1, 3] + float(base_translation[1])
+            tz = T[2, 3] + float(base_translation[2])
+            tx += float(lift_vec[0])
+            ty += float(lift_vec[1])
+            tz += float(lift_vec[2])
+            rx, ry, rz = self._matrix_to_lcs_euler(T[:3, :3])
 
             body_id = self._rs.add_rigid_body(
                 link_name,
                 mesh.vertices, mesh.faces,
                 tx=float(tx), ty=float(ty), tz=float(tz),
+                rx=float(rx), ry=float(ry), rz=float(rz),
                 fixed=is_fixed,
             )
             self._link_body_ids[link_name] = body_id
@@ -106,8 +151,8 @@ class RobotBuilder:
                 continue
 
             # Joint anchor in world frame (from parent origin)
-            axis = joint.axis.astype(np.float64)
-            anchor_parent = joint.origin_xyz.astype(np.float64)
+            axis = axis_xform @ joint.axis.astype(np.float64)
+            anchor_parent = axis_xform @ joint.origin_xyz.astype(np.float64)
             anchor_child = np.zeros(3, dtype=np.float64)
 
             jtype = joint.joint_type.lower()
@@ -185,6 +230,63 @@ class RobotBuilder:
                        [0.0, 0.0, 1.0]], dtype=np.float64)
         return rz @ ry @ rx
 
+    @staticmethod
+    def _axis_transform_matrix(swap_yz: bool) -> np.ndarray:
+        if not swap_yz:
+            return np.eye(3, dtype=np.float64)
+        return np.array([[1.0, 0.0, 0.0],
+                         [0.0, 0.0, 1.0],
+                         [0.0, 1.0, 0.0]], dtype=np.float64)
+
+    @staticmethod
+    def _apply_axis_transform(T: np.ndarray, axis_xform: np.ndarray) -> np.ndarray:
+        result = np.eye(4, dtype=np.float64)
+        result[:3, :3] = axis_xform @ T[:3, :3] @ axis_xform.T
+        result[:3, 3] = axis_xform @ T[:3, 3]
+        return result
+
+    @staticmethod
+    def _apply_mesh_axis_transform(mesh: trimesh.Trimesh, axis_xform: np.ndarray) -> trimesh.Trimesh:
+        if np.allclose(axis_xform, np.eye(3)):
+            return mesh
+        result = mesh.copy()
+        result.vertices = (axis_xform @ np.asarray(result.vertices, dtype=np.float64).T).T
+        if np.linalg.det(axis_xform) < 0.0:
+            result.faces = np.asarray(result.faces)[:, ::-1]
+        return result
+
+    @staticmethod
+    def _matrix_to_rpy(matrix) -> np.ndarray:
+        """Convert a rotation matrix to URDF fixed-axis roll-pitch-yaw angles."""
+        m = np.asarray(matrix, dtype=np.float64)
+        sy = -m[2, 0]
+        cy = np.sqrt(max(0.0, 1.0 - sy * sy))
+        if cy > 1.0e-12:
+            roll = np.arctan2(m[2, 1], m[2, 2])
+            pitch = np.arctan2(sy, cy)
+            yaw = np.arctan2(m[1, 0], m[0, 0])
+        else:
+            roll = np.arctan2(-m[1, 2], m[1, 1])
+            pitch = np.arctan2(sy, cy)
+            yaw = 0.0
+        return np.array([roll, pitch, yaw], dtype=np.float64)
+
+    @staticmethod
+    def _matrix_to_lcs_euler(matrix) -> np.ndarray:
+        """Convert a rotation matrix to the Euler order used by WorldData.set_rotation."""
+        m = np.asarray(matrix, dtype=np.float64)
+        sy = m[0, 2]
+        cy = np.sqrt(max(0.0, 1.0 - sy * sy))
+        if cy > 1.0e-12:
+            rx = np.arctan2(-m[1, 2], m[2, 2])
+            ry = np.arctan2(sy, cy)
+            rz = np.arctan2(-m[0, 1], m[0, 0])
+        else:
+            rx = np.arctan2(m[2, 1], m[1, 1])
+            ry = np.arctan2(sy, cy)
+            rz = 0.0
+        return np.array([rx, ry, rz], dtype=np.float64)
+
     def _find_joint(self, parent: str, child: str) -> URDFJoint | None:
         for j in self._model.joints:
             if j.parent == parent and j.child == child:
@@ -208,7 +310,11 @@ class RobotBuilder:
                 if path and mesh_root:
                     path = os.path.join(mesh_root, path)
                 if path and os.path.exists(path):
-                    return trimesh.load(path, process=False)
+                    try:
+                        mesh = trimesh.load(path, process=False)
+                        return self._apply_shape_transform(mesh, col)
+                    except Exception:
+                        pass
 
         # Fall back to visual meshes
         for vis in link.visuals:
@@ -217,16 +323,35 @@ class RobotBuilder:
                 if path and mesh_root:
                     path = os.path.join(mesh_root, path)
                 if path and os.path.exists(path):
-                    return trimesh.load(path, process=False)
+                    try:
+                        mesh = trimesh.load(path, process=False)
+                        return self._apply_shape_transform(mesh, vis)
+                    except Exception:
+                        pass
 
         # Generate primitive geometry
         for col in link.collisions + link.visuals:
             prim = self._make_primitive_mesh(col.geometry_type,
                                              col.geometry_data)
             if prim is not None:
-                return prim
+                return self._apply_shape_transform(prim, col)
 
         return default_mesh
+
+    @staticmethod
+    def _apply_shape_transform(mesh: trimesh.Trimesh, shape) -> trimesh.Trimesh:
+        """Bake a URDF visual/collision origin and mesh scale into a link-local mesh."""
+        result = mesh.copy()
+        scale = shape.geometry_data.get("scale") if shape.geometry_type == "mesh" else None
+        if scale is not None:
+            scale_vec = np.asarray(scale, dtype=np.float64)
+            result.vertices = np.asarray(result.vertices, dtype=np.float64) * scale_vec
+
+        T = np.eye(4, dtype=np.float64)
+        T[:3, :3] = RobotBuilder._rpy_to_matrix(shape.origin_rpy)
+        T[:3, 3] = np.asarray(shape.origin_xyz, dtype=np.float64)
+        result.apply_transform(T)
+        return result
 
     @staticmethod
     def _make_primitive_mesh(geom_type: str, data: dict) -> trimesh.Trimesh | None:

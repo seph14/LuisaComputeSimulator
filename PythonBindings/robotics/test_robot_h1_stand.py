@@ -35,7 +35,10 @@ parser.add_argument("--advance_frames", type=int, default=500)
 parser.add_argument("--base_height", type=float, default=0.0)
 parser.add_argument("--floor_clearance", type=float, default=0.05)
 parser.add_argument("--disable_auto_lift", action="store_true")
-parser.add_argument("--no_swap_yz", action="store_true")
+# H1 URDF in this repo is already aligned with solver Z-up in practice.
+# Keep Y/Z swap opt-in for compatibility experiments.
+parser.add_argument("--swap_yz", action="store_true",
+                    help="Swap URDF Y/Z axes before building (default: off)")
 parser.add_argument("--disable_floor", action="store_true")
 args = parser.parse_args()
 
@@ -85,10 +88,12 @@ floor_normal = (float(config.get_floor_normal().x),
 
 # ── Build robot (swap_yz=True: URDF Y-up → solver Z-up) ────────────
 builder = RobotBuilder(rs, model, fixed_base=True)
+swap_yz = bool(args.swap_yz)
+print(f"  Axis mapping: swap_yz={'on' if swap_yz else 'off'}")
 builder.build(
     mesh_root=os.path.dirname(H1_URDF),
     base_translation=(0.0, 0.0, args.base_height),
-    swap_yz=True,
+    swap_yz=swap_yz,
     floor_height=None if args.disable_auto_lift else 0.0,
     floor_normal=floor_normal,
     floor_clearance=args.floor_clearance,
@@ -122,7 +127,8 @@ floor_height = float(np.dot(
                 float(config.get_floor().z)]),
     np.asarray(floor_normal)))
 initial_min_floor = scene_min_floor_coord(rs, body_names, floor_normal)
-print(f"  Floor: height={floor_height:.4f}, normal={floor_normal}, min={initial_min_floor:.4f}")
+print(f"  Floor: height={floor_height:.4f}, normal={floor_normal}, min={initial_min_floor:.4f}, "
+      f"auto_lift={'off' if args.disable_auto_lift else 'on'}")
 
 # ── Simulate ────────────────────────────────────────────────────────
 if args.headless:

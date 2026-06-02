@@ -83,7 +83,9 @@ class SimulationGUI:
 
     def show(self):
         """Initialise polyscope, register meshes, set the callback and open the window."""
+        self._sync_polyscope_up_dir_from_floor()
         ps.init()
+        self._sync_polyscope_up_dir_from_floor()
         self._register_meshes()
         ps.set_user_callback(self._ui_callback)
         ps.show()
@@ -361,6 +363,7 @@ class SimulationGUI:
 
     def _panel_collision(self):
         cfg = self._config
+        self._sync_polyscope_up_dir_from_floor()
         floor_vec = cfg.get_floor()
         floor_axis, floor_label = self._floor_axis_info(cfg)
         floor_height = self._vec_component(floor_vec, floor_axis)
@@ -373,6 +376,38 @@ class SimulationGUI:
             ps.set_ground_plane_mode("none")
 
         if psim.TreeNode("Collision"):
+            get_up_dir = getattr(ps, "get_up_dir", None)
+            if get_up_dir is not None:
+                psim.TextUnformatted(f"Polyscope up dir: {get_up_dir()}")
+
+            aabb = self._scene_aabb()
+            if aabb is not None:
+                bb_min, bb_max = aabb
+                crosses = [bb_min[i] <= 0.0 <= bb_max[i] for i in range(3)]
+                psim.TextUnformatted(
+                    "Scene AABB min=({:.4f}, {:.4f}, {:.4f}) max=({:.4f}, {:.4f}, {:.4f})".format(
+                        bb_min[0], bb_min[1], bb_min[2], bb_max[0], bb_max[1], bb_max[2]
+                    )
+                )
+                psim.TextUnformatted(f"AABB crosses 0 (X,Y,Z): {crosses}")
+
+            min_dist = self._scene_min_floor_signed_distance()
+            if min_dist is not None:
+                if min_dist < -1.0e-4:
+                    state = "PENETRATING"
+                elif min_dist <= 1.0e-4:
+                    state = "TOUCHING"
+                else:
+                    state = "SEPARATED"
+                psim.TextUnformatted(
+                    f"Min signed floor dist: {min_dist:.6f} ({state})"
+                )
+
+            if not self._is_floor_axis_aligned():
+                psim.TextUnformatted(
+                    "[warn] Floor normal is not axis-aligned; Polyscope ground is an axis-aligned approximation."
+                )
+
             _, val = psim.Checkbox("Use Ground Collision", cfg.get_use_floor())
             cfg.set_use_floor(val)
             if cfg.get_use_floor():
@@ -408,6 +443,89 @@ class SimulationGUI:
         normal_vals = [abs(normal.x), abs(normal.y), abs(normal.z)]
         axis = int(np.argmax(normal_vals))
         return axis, f"Floor {'XYZ'[axis]}"
+
+    def _sync_polyscope_up_dir_from_floor(self):
+        """Match Polyscope world-up to the solver floor normal's dominant axis."""
+        set_up_dir = getattr(ps, "set_up_dir", None)
+        if set_up_dir is None:
+            return
+
+        normal = self._config.get_floor_normal()
+        vals = np.asarray([float(normal.x), float(normal.y), float(normal.z)], dtype=np.float64)
+        axis = int(np.argmax(np.abs(vals)))
+        sign = 1 if vals[axis] >= 0.0 else -1
+        axis_prefix = ("x", "y", "z")[axis]
+        up_dir = f"{axis_prefix}_up" if sign >= 0 else f"neg_{axis_prefix}_up"
+        set_up_dir(up_dir)
+
+    def _scene_min_floor_signed_distance(self):
+        """Return min dot((x - floor_origin), floor_normal) over all render vertices."""
+        try:
+            v_list, _ = self._solver.get_sim_result()
+        except Exception:
+            return None
+
+        if len(v_list) == 0:
+            return None
+
+        floor = self._config.get_floor()
+        normal = self._config.get_floor_normal()
+        n = np.asarray([float(normal.x), float(normal.y), float(normal.z)], dtype=np.float64)
+        n_norm = np.linalg.norm(n)
+        if n_norm <= 0.0:
+            return None
+        n = n / n_norm
+        p0 = np.asarray([float(floor.x), float(floor.y), float(floor.z)], dtype=np.float64)
+
+        min_dist = np.inf
+        for verts in v_list:
+            vv = np.asarray(verts, dtype=np.float64)
+            if vv.size == 0:
+                continue
+            d = (vv - p0) @ n
+            min_dist = min(min_dist, float(np.min(d)))
+
+        if np.isfinite(min_dist):
+            return min_dist
+        return None
+
+    def _scene_aabb(self):
+        """Return (min_xyz, max_xyz) for the whole rendered scene."""
+        try:
+            v_list, _ = self._solver.get_sim_result()
+        except Exception:
+            return None
+
+        mins = np.asarray([np.inf, np.inf, np.inf], dtype=np.float64)
+        maxs = np.asarray([-np.inf, -np.inf, -np.inf], dtype=np.float64)
+        has_any = False
+
+        for verts in v_list:
+            vv = np.asarray(verts, dtype=np.float64)
+            if vv.size == 0:
+                continue
+            has_any = True
+            mins = np.minimum(mins, vv.min(axis=0))
+            maxs = np.maximum(maxs, vv.max(axis=0))
+
+        if not has_any:
+            return None
+        return mins, maxs
+
+    def _is_floor_axis_aligned(self, tol: float = 1.0e-6):
+        normal = self._config.get_floor_normal()
+        vals = np.asarray([float(normal.x), float(normal.y), float(normal.z)], dtype=np.float64)
+        n_norm = np.linalg.norm(vals)
+        if n_norm <= 0.0:
+            return False
+        vals = vals / n_norm
+        axis = int(np.argmax(np.abs(vals)))
+        for i in range(3):
+            if i == axis:
+                continue
+            if abs(vals[i]) > tol:
+                return False
+        return True
 
     # ---- Data IO panel ---------------------------------------------------
 

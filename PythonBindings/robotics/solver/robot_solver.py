@@ -8,6 +8,8 @@ and high-level simulation control methods.
 import numpy as np
 import lcs_py as lcs
 
+from robotics.solver.world_meta import WorldMeta, BodyMeta, JointMeta
+
 
 class RobotSolver:
     def __init__(self, backend_name="metal"):
@@ -18,6 +20,8 @@ class RobotSolver:
         # Joint metadata: maps (parent_name, child_name) -> (joint_index, joint_type)
         self._joint_index_map: dict = {}
         self._joint_names: list = []
+        # Multi-world metadata (P2.1)
+        self._world_meta: WorldMeta = WorldMeta()
 
     @property
     def solver(self):
@@ -147,10 +151,227 @@ class RobotSolver:
 
     def _record_joint(self, body_a_name, body_b_name, jtype):
         """Record joint metadata for name-based lookup."""
+        self._record_joint_returning_idx(body_a_name, body_b_name, jtype)
+
+    def _record_joint_returning_idx(self, body_a_name, body_b_name, jtype):
+        """Record joint metadata and return the assigned joint index."""
         idx = len(self._joint_names)
         pair = (body_a_name, body_b_name)
         self._joint_index_map[pair] = (idx, jtype)
         self._joint_names.append(f"{body_a_name}_{body_b_name}_{jtype}")
+        return idx
+
+    # ── Multi-world replication (P2.2) ───────────────────────────────
+
+    def replicate(self, body_specs: list, joint_specs: list,
+                  world_count: int, spacing: tuple = (0.0, 2.0, 0.0)):
+        """
+        Register world_count-1 additional copies of all bodies and joints,
+        each offset by `spacing` from the previous world.
+
+        Must be called AFTER world 0 bodies/joints are registered
+        and BEFORE init_solver().
+
+        Args:
+            body_specs: list of dicts with keys:
+                name, vertices, faces, tx, ty, tz, rx, ry, rz, sx, sy, sz,
+                fixed, mass, com, density
+            joint_specs: list of dicts with keys:
+                parent_name, child_name, joint_type, kwargs
+            world_count: Total number of worlds (including already-built world 0).
+            spacing: (dx, dy, dz) offset between consecutive worlds.
+        """
+        dx, dy, dz = spacing
+
+        # Compute DOF per world
+        dof_per_world = 0
+        for js in joint_specs:
+            jtype = js["joint_type"]
+            if jtype not in ("fixed", "free"):
+                dof_per_world += 1
+
+        # Populate world 0 metadata from existing _body_ids and _joint_index_map
+        wm = WorldMeta()
+        wm.world_count = world_count
+        wm.body_count_per_world = len(body_specs)
+        wm.joint_count_per_world = len(joint_specs)
+        wm.dof_per_world = dof_per_world
+
+        # Register world 0 metadata
+        for bs in body_specs:
+            name = bs["name"]
+            rid = self._body_ids.get(name, -1)
+            bm = BodyMeta(name=name, world_id=0, registration_id=rid,
+                          fixed=bs.get("fixed", False))
+            wm.body_map.setdefault(0, {})[name] = bm
+            wm.rid_to_body[rid] = bm
+
+        # Map joint specs to recorded indices
+        dof_idx = 0
+        for ji, js in enumerate(joint_specs):
+            pname = js["parent_name"]
+            cname = js["child_name"]
+            jtype = js["joint_type"]
+            pair = (pname, cname)
+            rev_pair = (cname, pname)
+            if pair in self._joint_index_map:
+                jidx, _ = self._joint_index_map[pair]
+            elif rev_pair in self._joint_index_map:
+                jidx, _ = self._joint_index_map[rev_pair]
+            else:
+                jidx = ji  # fallback
+            jm = JointMeta(
+                name=f"{pname}_{cname}_{jtype}",
+                parent_name=pname, child_name=cname,
+                joint_type=jtype, world_id=0,
+                joint_index=jidx,
+                dof_index=(dof_idx if jtype not in ("fixed", "free") else -1),
+            )
+            if jtype not in ("fixed", "free"):
+                dof_idx += 1
+            wm.joint_map.setdefault(0, {})[jm.name] = jm
+            wm.jidx_to_joint[jidx] = jm
+
+        # Register worlds 1..world_count-1
+        for w in range(1, world_count):
+            offset_x = w * dx
+            offset_y = w * dy
+            offset_z = w * dz
+            dof_idx_w = 0
+
+            # Clone bodies
+            for bs in body_specs:
+                name = bs["name"]
+                world_name = f"world_{w}/{name}"
+                rid = self.add_rigid_body(
+                    world_name,
+                    bs["vertices"], bs["faces"],
+                    bs["tx"] + offset_x,
+                    bs["ty"] + offset_y,
+                    bs["tz"] + offset_z,
+                    bs.get("sx", 1.0), bs.get("sy", 1.0), bs.get("sz", 1.0),
+                    bs.get("rx", 0.0), bs.get("ry", 0.0), bs.get("rz", 0.0),
+                    fixed=bs.get("fixed", False),
+                    mass=bs.get("mass"), com=bs.get("com"),
+                    density=bs.get("density"),
+                )
+                bm = BodyMeta(name=name, world_id=w, registration_id=rid,
+                              fixed=bs.get("fixed", False))
+                wm.body_map.setdefault(w, {})[name] = bm
+                wm.rid_to_body[rid] = bm
+
+            # Clone joints
+            for js in joint_specs:
+                pname = js["parent_name"]
+                cname = js["child_name"]
+                jtype = js["joint_type"]
+                kwargs = js.get("kwargs", {})
+
+                parent_rid = wm.body_map[w][pname].registration_id
+                child_rid = wm.body_map[w][cname].registration_id
+
+                if jtype == "fixed":
+                    self._solver.add_fixed_joint(
+                        parent_rid, child_rid,
+                        kwargs.get("anchor_a", np.zeros(3, dtype=np.float32)),
+                        kwargs.get("anchor_b", np.zeros(3, dtype=np.float32)),
+                        kwargs.get("stiffness_pos", 1.0e6),
+                        kwargs.get("stiffness_rot", 1.0e5),
+                    )
+                elif jtype == "prismatic":
+                    self._solver.add_prismatic_joint(
+                        parent_rid, child_rid,
+                        kwargs["anchor_a"], kwargs["anchor_b"],
+                        kwargs["axis"],
+                        kwargs.get("stiffness_pos", 5.0e4),
+                        kwargs.get("stiffness_rot", 1.0e4),
+                        kwargs.get("slide_min", -1e10),
+                        kwargs.get("slide_max", 1e10),
+                    )
+                elif jtype == "revolute":
+                    self._solver.add_revolute_joint(
+                        parent_rid, child_rid,
+                        kwargs["anchor_a"], kwargs["anchor_b"],
+                        kwargs["axis"],
+                        kwargs.get("axis_a", kwargs["axis"]),
+                        kwargs.get("axis_b", kwargs["axis"]),
+                        kwargs.get("stiffness_pos", 5.0e4),
+                        kwargs.get("stiffness_axis", 2.0e3),
+                    )
+                elif jtype == "ball":
+                    self._solver.add_ball_joint(
+                        parent_rid, child_rid,
+                        kwargs["anchor_a"], kwargs["anchor_b"],
+                        kwargs.get("stiffness_pos", 5.0e4),
+                    )
+                elif jtype == "free":
+                    self._solver.add_free_joint(parent_rid, child_rid)
+
+                joint_name = f"{pname}_{cname}_{jtype}"
+                # _record_joint was already called for world 0;
+                # for worlds 1+, record via returned index
+                jidx = self._record_joint_returning_idx(pname, cname, jtype)
+                jm = JointMeta(
+                    name=joint_name,
+                    parent_name=pname, child_name=cname,
+                    joint_type=jtype, world_id=w,
+                    joint_index=jidx,
+                    dof_index=(dof_idx_w if jtype not in ("fixed", "free") else -1),
+                )
+                if jtype not in ("fixed", "free"):
+                    dof_idx_w += 1
+                wm.joint_map.setdefault(w, {})[joint_name] = jm
+                wm.jidx_to_joint[jidx] = jm
+
+        self._world_meta = wm
+        print(f"  Replicated: {world_count} worlds, "
+              f"{world_count * len(body_specs)} bodies, "
+              f"{world_count * len(joint_specs)} joints")
+
+    # ── Initial state save/restore (P2.4) ──────────────────────────
+
+    def save_initial_state(self):
+        """Snapshot current body poses and joint q for reset support.
+        Call AFTER init_solver(), BEFORE first step()."""
+        wm = self._world_meta
+        if wm.world_count == 0:
+            # Single-world mode: save from _body_ids
+            for name, rid in self._body_ids.items():
+                t = np.array(self._solver.get_rigid_body_translation(rid),
+                             dtype=np.float64)
+                q = np.array(self._solver.get_rigid_body_rotation_quaternion(rid),
+                             dtype=np.float64)
+                wm.initial_body_poses[rid] = np.concatenate([t, q])
+            joint_vals = self.get_all_joint_values()
+            for jidx in range(len(joint_vals)):
+                wm.initial_joint_q[jidx] = float(joint_vals[jidx])
+        else:
+            for rid in wm.rid_to_body:
+                t = np.array(self._solver.get_rigid_body_translation(rid),
+                             dtype=np.float64)
+                q = np.array(self._solver.get_rigid_body_rotation_quaternion(rid),
+                             dtype=np.float64)
+                wm.initial_body_poses[rid] = np.concatenate([t, q])
+            joint_vals = self.get_all_joint_values()
+            for jidx in range(len(joint_vals)):
+                wm.initial_joint_q[jidx] = float(joint_vals[jidx])
+        self._initial_state_saved = True
+
+    def reset_worlds(self, indices: list = None):
+        """
+        Reset simulation to initial state.
+
+        Currently wraps restart_system() for full reset.
+        Per-world selective reset requires future C++ support.
+
+        Args:
+            indices: Ignored (future: list of world indices to reset).
+                     Currently always does full reset.
+        """
+        if indices is not None and len(indices) < self._world_meta.world_count:
+            print("  NOTE: Per-world selective reset not yet supported; "
+                  "doing full restart_system()")
+        self._solver.restart_system()
 
     def init_solver(self):
         self._solver.init_solver()
@@ -200,16 +421,20 @@ class RobotSolver:
         """ROADMAP 1.5: Set target position for a joint."""
         self._solver.set_joint_target_pos(joint_idx, target)
 
-    def get_body_pose(self, body_name):
+    def get_body_pose(self, body_name, world_id: int = 0):
         """ROADMAP 1.6: Get world-frame body pose (translation + rotation quaternion)."""
-        rid = self._body_ids[body_name]
+        rid = self.get_body_id(body_name, world_id)
+        if rid < 0:
+            raise KeyError(f"Body '{body_name}' not found in world {world_id}")
         t = np.array(self._solver.get_rigid_body_translation(rid), dtype=np.float64)
         q = np.array(self._solver.get_rigid_body_rotation_quaternion(rid), dtype=np.float64)
         return t, q  # (translation_xyz, quaternion_wxyz)
 
-    def get_body_velocity(self, body_name):
+    def get_body_velocity(self, body_name, world_id: int = 0):
         """ROADMAP 1.6: Get world-frame body velocity (linear + angular)."""
-        rid = self._body_ids[body_name]
+        rid = self.get_body_id(body_name, world_id)
+        if rid < 0:
+            raise KeyError(f"Body '{body_name}' not found in world {world_id}")
         v = np.array(self._solver.get_rigid_body_velocity(rid), dtype=np.float64)
         return v  # [vx, vy, vz, wx, wy, wz]
 
@@ -218,21 +443,31 @@ class RobotSolver:
     def print_mesh_info(self):
         self._solver.print_registered_meshes_info()
 
-    # ── Body/joint name lookup (ROADMAP B.2) ──────────────────────
+    # ── Body/joint name lookup (ROADMAP B.2 + P2.1 world_id) ──────
 
-    def get_body_id(self, name: str) -> int:
-        """Get registration ID for a body by name."""
+    def get_body_id(self, name: str, world_id: int = 0) -> int:
+        """Get registration ID for a body by name and optional world."""
+        wm = self._world_meta
+        if wm.world_count > 0:
+            return wm.get_body_rid(name, world_id)
         return self._body_ids.get(name, -1)
 
     def get_body_name(self, rid: int) -> str:
         """Get body name from registration ID."""
+        wm = self._world_meta
+        if rid in wm.rid_to_body:
+            bm = wm.rid_to_body[rid]
+            return f"world_{bm.world_id}/{bm.name}"
         for name, body_id in self._body_ids.items():
             if body_id == rid:
                 return name
         return ""
 
-    def get_joint_index(self, body_a: str, body_b: str) -> int:
-        """Find joint index connecting two bodies by name."""
+    def get_joint_index(self, body_a: str, body_b: str, world_id: int = 0) -> int:
+        """Find joint index connecting two bodies by name and optional world."""
+        wm = self._world_meta
+        if wm.world_count > 0:
+            return wm.get_joint_index(body_a, body_b, world_id)
         pair = (body_a, body_b)
         rev_pair = (body_b, body_a)
         if pair in self._joint_index_map:
@@ -243,12 +478,21 @@ class RobotSolver:
 
     def get_joint_name(self, idx: int) -> str:
         """Get joint name by index."""
+        wm = self._world_meta
+        if idx in wm.jidx_to_joint:
+            jm = wm.jidx_to_joint[idx]
+            return f"world_{jm.world_id}/{jm.name}"
         if 0 <= idx < len(self._joint_names):
             return self._joint_names[idx]
         return ""
 
-    def get_joint_type_by_name(self, body_a: str, body_b: str) -> str:
-        """Get joint type string by body names."""
+    def get_joint_type_by_name(self, body_a: str, body_b: str,
+                               world_id: int = 0) -> str:
+        """Get joint type string by body names and optional world."""
+        wm = self._world_meta
+        if wm.world_count > 0:
+            jm = wm.get_joint_meta(body_a, body_b, world_id)
+            return jm.joint_type if jm else ""
         pair = (body_a, body_b)
         rev_pair = (body_b, body_a)
         if pair in self._joint_index_map:

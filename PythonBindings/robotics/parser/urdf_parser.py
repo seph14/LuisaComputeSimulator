@@ -67,6 +67,7 @@ class URDFJoint:
     axis: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0], dtype=np.float32))
     lower_limit: float = 0.0
     upper_limit: float = 0.0
+    has_limits: bool = False  # True when <limit> element is present in URDF
     effort_limit: float = 0.0
     velocity_limit: float = 0.0
     # Drive parameters (optional, from dynamics element)
@@ -236,6 +237,7 @@ class URDFParser:
             # Limits
             limit_elem = joint_elem.find("limit")
             if limit_elem is not None:
+                joint.has_limits = True
                 joint.lower_limit = float(limit_elem.get("lower", "0"))
                 joint.upper_limit = float(limit_elem.get("upper", "0"))
                 joint.effort_limit = float(limit_elem.get("effort", "0"))

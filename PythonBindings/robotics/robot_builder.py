@@ -167,10 +167,10 @@ class RobotBuilder:
             jtype = joint.joint_type.lower()
 
             if jtype in ("revolute", "continuous"):
-                # Pass URDF angle limits if defined (P3.1)
-                # Use large values instead of inf to avoid pybind11 float conversion issues
-                lower_angle = joint.lower_limit if joint.lower_limit != 0.0 else -1e10
-                upper_angle = joint.upper_limit if joint.upper_limit != 0.0 else 1e10
+                # Pass URDF angle limits if <limit> element was present (P3.1)
+                # Use joint.has_limits to distinguish "limit=0" from "no limit element"
+                lower_angle = joint.lower_limit if joint.has_limits else -1e10
+                upper_angle = joint.upper_limit if joint.has_limits else 1e10
                 self._rs.add_revolute_joint(
                     joint.parent, joint.child,
                     anchor_parent, anchor_child, axis,

@@ -70,16 +70,21 @@ class ArticulationView:
         return lut
 
     def _build_dof_lut(self):
-        """Build [world_count, dof] lookup: world w, dof d -> global joint_index."""
+        """Build [world_count, dof] lookup: world w, dof d -> global joint_index.
+
+        Uses WorldMeta.world_dof_indices() for correct per-world DOF mapping,
+        which handles non-uniform joint registration orders (e.g. manual multi-robot scenes)."""
         lut = np.zeros((self._world_count, self._dof), dtype=np.int32)
-        # For world 0, use the provided indices
-        for d, jidx in enumerate(self._joint_indices_w0):
-            lut[0, d] = jidx
-        # For worlds 1+, compute offset: each world adds joint_count_per_world joints
-        jpw = self._meta.joint_count_per_world
-        for w in range(1, self._world_count):
-            for d in range(self._dof):
-                lut[w, d] = lut[0, d] + w * jpw
+        for w in range(self._world_count):
+            indices = self._meta.world_dof_indices(w)
+            if len(indices) != self._dof:
+                # If world w has a different DOF count, fall back to offset calculation
+                jpw = self._meta.joint_count_per_world
+                for d in range(self._dof):
+                    lut[w, d] = self._joint_indices_w0[d] + w * jpw
+            else:
+                for d, jidx in enumerate(indices):
+                    lut[w, d] = jidx
         return lut
 
     # ── Joint queries ────────────────────────────────────────────
@@ -111,6 +116,10 @@ class ArticulationView:
         Set joint targets for all worlds.
         Args:
             targets: [world_count, dof] or [dof] (broadcast to all worlds).
+
+        Performance note: O(world_count × dof) Python→C++ crossings per call.
+        For RL training with world_count=100, dof=12, this is 1200 calls/frame.
+        A future C++ batch set_joint_target_pos_batch() would reduce this to 1 call.
         """
         targets = np.asarray(targets, dtype=np.float64)
         if targets.ndim == 1:

@@ -96,7 +96,13 @@ class WorldMeta:
         return list(world_bodies.keys())
 
     def world_joint_indices(self, world_id: int = 0) -> List[int]:
-        """List joint indices in a given world, in registration order."""
+        """List joint indices in a given world, in registration order.
+
+        NOTE: This sorts by joint_index which assumes joints were registered
+        sequentially per world (as replicate() does). If joints are added
+        in a different order (e.g. all fixed joints then all revolute),
+        the returned order will follow the C++ joint type concatenation
+        (fixed → prismatic → revolute → ball → free), not per-world order."""
         world_joints = self.joint_map.get(world_id, {})
         # Sort by joint_index to get registration order
         sorted_joints = sorted(world_joints.values(), key=lambda jm: jm.joint_index)

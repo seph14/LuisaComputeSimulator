@@ -361,10 +361,14 @@ class SimulationGUI:
 
     def _panel_collision(self):
         cfg = self._config
+        floor_vec = cfg.get_floor()
+        floor_axis, floor_label = self._floor_axis_info(cfg)
+        floor_height = self._vec_component(floor_vec, floor_axis)
+
         if cfg.get_use_floor():
             ps.set_ground_plane_mode("tile_reflection")
             ps.set_ground_plane_height_mode("manual")
-            ps.set_ground_plane_height(cfg.get_floor().y)
+            ps.set_ground_plane_height(floor_height)
         else:
             ps.set_ground_plane_mode("none")
 
@@ -372,14 +376,38 @@ class SimulationGUI:
             _, val = psim.Checkbox("Use Ground Collision", cfg.get_use_floor())
             cfg.set_use_floor(val)
             if cfg.get_use_floor():
-                changed, new_floor_y = psim.SliderFloat(
-                    "Floor Y", cfg.get_floor().y, v_min=-1.0, v_max=1.0
+                changed, new_floor_height = psim.SliderFloat(
+                    floor_label, floor_height, v_min=-5.0, v_max=5.0
                 )
                 if changed:
                     floor_vec = cfg.get_floor()
-                    floor_vec.y = new_floor_y
+                    self._set_vec_component(floor_vec, floor_axis, new_floor_height)
                     cfg.set_floor(floor_vec)
             psim.TreePop()
+
+    @staticmethod
+    def _vec_component(vec, axis: int):
+        if axis == 0:
+            return vec.x
+        if axis == 1:
+            return vec.y
+        return vec.z
+
+    @staticmethod
+    def _set_vec_component(vec, axis: int, value: float):
+        if axis == 0:
+            vec.x = value
+        elif axis == 1:
+            vec.y = value
+        else:
+            vec.z = value
+
+    @staticmethod
+    def _floor_axis_info(cfg):
+        normal = cfg.get_floor_normal()
+        normal_vals = [abs(normal.x), abs(normal.y), abs(normal.z)]
+        axis = int(np.argmax(normal_vals))
+        return axis, f"Floor {'XYZ'[axis]}"
 
     # ---- Data IO panel ---------------------------------------------------
 

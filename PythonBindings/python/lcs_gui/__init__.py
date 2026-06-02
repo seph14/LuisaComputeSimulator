@@ -12,6 +12,9 @@ Sub-modules:
     mesh_proc       — ``write_obj``, ``get_sample_tet_grid``
 """
 
-from .polyscope_gui import SimulationGUI
+try:
+    from utils.polyscope_gui import SimulationGUI
+except ImportError:
+    from .polyscope_gui import SimulationGUI
 
 __all__ = ["SimulationGUI"]

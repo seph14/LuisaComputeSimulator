@@ -219,7 +219,13 @@ class RobotSolver:
             elif rev_pair in self._joint_index_map:
                 jidx, _ = self._joint_index_map[rev_pair]
             else:
-                jidx = ji  # fallback
+                # Fallback: joint not in world 0's _joint_index_map (e.g. fixed joints
+                # added directly via _solver bypassing _record_joint). Use positional offset.
+                jidx = self._joint_index_map.get(
+                    list(self._joint_index_map.keys())[ji], (ji, "")
+                )[0] if ji < len(self._joint_index_map) else ji
+                print(f"  WARNING: joint ({pname}, {cname}) not in index map; "
+                      f"using fallback index {jidx}")
             jm = JointMeta(
                 name=f"{pname}_{cname}_{jtype}",
                 parent_name=pname, child_name=cname,

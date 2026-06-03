@@ -1267,6 +1267,58 @@ namespace lcs::Initializer
 				return true;
 			};
 
+			auto try_get_rigid_body_mass = [&](uint registration_id, float& out_mass) -> bool
+			{
+				if (registration_id >= mesh_data->input_to_sorted_mesh_id.size())
+				{
+					LUISA_WARNING("Joint mass scaling uses invalid registration id {}", registration_id);
+					return false;
+				}
+
+				const uint sorted_idx = mesh_data->input_to_sorted_mesh_id[registration_id];
+				if (sorted_idx >= mesh_data->sa_body_mass.size())
+				{
+					LUISA_WARNING("Joint registration id {} maps to invalid mass index {}", registration_id, sorted_idx);
+					return false;
+				}
+
+				const float mass = mesh_data->sa_body_mass[sorted_idx];
+				if (!std::isfinite(mass) || mass <= 1.0e-12f)
+				{
+					LUISA_WARNING("Joint registration id {} has invalid body mass {}; using unscaled stiffness", registration_id, mass);
+					return false;
+				}
+
+				out_mass = mass;
+				return true;
+			};
+
+			auto compute_joint_reduced_mass_scale = [&](uint registration_a, uint registration_b) -> float
+			{
+				float mass_a = 0.0f;
+				float mass_b = 0.0f;
+				if (!try_get_rigid_body_mass(registration_a, mass_a)
+					|| !try_get_rigid_body_mass(registration_b, mass_b))
+				{
+					return 1.0f;
+				}
+
+				const float mass_sum = mass_a + mass_b;
+				if (!std::isfinite(mass_sum) || mass_sum <= 1.0e-12f)
+				{
+					LUISA_WARNING("Joint body masses ({}, {}) cannot form a valid reduced mass; using unscaled stiffness", mass_a, mass_b);
+					return 1.0f;
+				}
+
+				return (mass_a * mass_b) / mass_sum;
+			};
+
+			auto scaled_joint_stiffness = [&](uint registration_a, uint registration_b, float stiffness_x, float stiffness_y)
+			{
+				const float reduced_mass = compute_joint_reduced_mass_scale(registration_a, registration_b);
+				return luisa::make_float2(stiffness_x * reduced_mass, stiffness_y * reduced_mass);
+			};
+
 			auto&				joint_data = sim_data->get_joint_constraint_data();
 			const luisa::float3 default_axis{ 1.f, 0.f, 0.f };
 			const auto&			rest_q = sim_data->sa_rest_q;
@@ -1319,7 +1371,7 @@ namespace lcs::Initializer
 				joint_data.axis_world.push_back(default_axis);
 				joint_data.axis_a_local.push_back(default_axis);
 				joint_data.axis_b_local.push_back(default_axis);
-				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_rot));
+				joint_data.stiffness.push_back(scaled_joint_stiffness(desc.body_a_registration, desc.body_b_registration, desc.stiffness_pos, desc.stiffness_rot));
 				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Fixed));
 				joint_data.slide_limits.push_back(luisa::make_float2(-std::numeric_limits<float>::max(), std::numeric_limits<float>::max()));
 			}
@@ -1355,7 +1407,7 @@ namespace lcs::Initializer
 				joint_data.axis_world.push_back(normalize_axis(desc.axis_world));
 				joint_data.axis_a_local.push_back(axis_a_local_prismatic);
 				joint_data.axis_b_local.push_back(default_axis);
-				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_rot));
+				joint_data.stiffness.push_back(scaled_joint_stiffness(desc.body_a_registration, desc.body_b_registration, desc.stiffness_pos, desc.stiffness_rot));
 				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Prismatic));
 				joint_data.slide_limits.push_back(luisa::make_float2(desc.slide_min, desc.slide_max));
 			}
@@ -1383,7 +1435,7 @@ namespace lcs::Initializer
 				joint_data.axis_world.push_back(normalize_axis(desc.axis_world));
 				joint_data.axis_a_local.push_back(normalize_axis(desc.axis_a_local));
 				joint_data.axis_b_local.push_back(normalize_axis(desc.axis_b_local));
-				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, desc.stiffness_axis));
+				joint_data.stiffness.push_back(scaled_joint_stiffness(desc.body_a_registration, desc.body_b_registration, desc.stiffness_pos, desc.stiffness_axis));
 				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Revolute));
 				joint_data.slide_limits.push_back(luisa::make_float2(desc.lower_angle, desc.upper_angle));
 			}
@@ -1408,7 +1460,7 @@ namespace lcs::Initializer
 				joint_data.axis_world.push_back(default_axis);
 				joint_data.axis_a_local.push_back(default_axis);
 				joint_data.axis_b_local.push_back(default_axis);
-				joint_data.stiffness.push_back(luisa::make_float2(desc.stiffness_pos, 0.0f));
+				joint_data.stiffness.push_back(scaled_joint_stiffness(desc.body_a_registration, desc.body_b_registration, desc.stiffness_pos, 0.0f));
 				joint_data.joint_type.push_back(static_cast<uint>(JointConstraintType::Ball));
 				joint_data.slide_limits.push_back(luisa::make_float2(-std::numeric_limits<float>::max(), std::numeric_limits<float>::max()));
 			}

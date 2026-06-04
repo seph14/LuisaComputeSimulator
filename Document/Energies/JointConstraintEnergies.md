@@ -161,9 +161,27 @@ Therefore their gradient/Hessian are exact analytic results from linear coeffici
 
 ## 7. Parameter Mapping
 
+The descriptor/API stiffness values are **mass-normalized base stiffnesses**. During joint initialization, `init_sim_data.cpp` computes the two-body reduced mass
+
+$$
+m_{eff}=\frac{m_A m_B}{m_A+m_B},
+$$
+
+where $m_A$ and $m_B$ are read from `mesh_data.sa_body_mass` after registration-id to sorted-mesh-id mapping. The values stored in `JointConstraint::stiffness` and consumed by the energy kernels are the scaled stiffnesses:
+
+$$
+k_{pos}=\bar{k}_{pos}m_{eff},\qquad
+k_{rot}=\bar{k}_{rot}m_{eff},\qquad
+k_{axis}=\bar{k}_{axis}m_{eff}.
+$$
+
+If either body mass is invalid, non-finite, or too small, initialization falls back to scale $1$ and stores the unscaled descriptor values.
+
 - Fixed: `stiffness.x = k_pos`, `stiffness.y = k_rot`
 - Prismatic: `stiffness.x = k_pos`, `stiffness.y = k_rot`
 - Revolute: `stiffness.x = k_pos`, `stiffness.y = k_axis`
+
+Here `stiffness` denotes the **post-scale** value in `JointConstraintData`; descriptor fields such as `stiffness_pos`, `stiffness_rot`, and `stiffness_axis` denote the base values $\bar{k}$.
 
 ## 8. DOF Summary
 
@@ -239,6 +257,7 @@ Here $c_j$ is column $j$ of $R_{ab}^0$.
 - Initialization (`init_sim_data.cpp`):
   - confirm `rest_position_delta = A0^{-1}(p_b0 - p_a0)`
   - confirm `rest_rot_col*` from `R_ab0 = A0^{-1}B0`
+  - confirm descriptor stiffness values are multiplied by reduced mass before being pushed into `joint_data.stiffness`
 - Data struct / upload:
   - confirm `rest_rot_col0/1/2_a_to_b` exists in `JointConstraint`
   - confirm CPU->GPU upload includes all three columns

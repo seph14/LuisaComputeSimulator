@@ -121,44 +121,9 @@ namespace lcs
 
 					// Angle limit penalty (slide_limits stores [lower_angle, upper_angle] for revolute)
 					const Float2 ang_lim = joint.slide_limits->read(joint_idx);
-					const Float	 lo = ang_lim.x;
-					const Float	 hi = ang_lim.y;
-					Bool		 has_lim = (lo > -1e9f) | (hi < 1e9f);
-					$if(has_lim)
-					{
-						// Compute current angle via R_delta rotation matrix
-						Float3x3 R_A = make_float3x3(q[1], q[2], q[3]);
-						Float3x3 R_B = make_float3x3(q[5], q[6], q[7]);
-						Float3x3 R_A_T = transpose(R_A);
-						Float3x3 R_ab = R_A_T * R_B;
-						Float3x3 R_ab_rest = make_float3x3(rest_rot_c0, rest_rot_c1, rest_rot_c2);
-						Float3x3 R_ab_rest_T = transpose(R_ab_rest);
-						Float3x3 R_delta = R_ab * R_ab_rest_T;
-
-						Float sx = R_delta[2][1] - R_delta[1][2];
-						Float sy = R_delta[0][2] - R_delta[2][0];
-						Float sz = R_delta[1][0] - R_delta[0][1];
-
-						Float  ax_len = sqrt(dot(axis_a, axis_a));
-						Float  inv_len = select(1.0f, 1.0f / ax_len, ax_len > 1e-12f);
-						Float3 ax_n = axis_a * inv_len;
-
-						Float sin_theta = 0.5f * (ax_n.x * sx + ax_n.y * sy + ax_n.z * sz);
-						Float trace_R = R_delta[0][0] + R_delta[1][1] + R_delta[2][2];
-						Float cos_theta = 0.5f * (trace_R - 1.0f);
-						Float angle = luisa::compute::atan2(sin_theta, cos_theta);
-
-						$if(angle < lo)
-						{
-							Float diff = angle - lo;
-							energy += 0.5f * stiff.x * diff * diff;
-						};
-						$if(angle > hi)
-						{
-							Float diff = angle - hi;
-							energy += 0.5f * stiff.x * diff * diff;
-						};
-					};
+					const Float	 angle = detail::revolute_joint_constaint::compute_angle<Float, Float3>(q, rest_rot_c0, rest_rot_c1, rest_rot_c2, axis_a);
+					const Float	 diff = detail::revolute_joint_constaint::limit_residual<Float>(angle, ang_lim.x, ang_lim.y);
+					energy += 0.5f * stiff.x * diff * diff;
 				};
 
 				// ── Joint drive energy (ROADMAP 1.4) ──────────────────────
@@ -178,23 +143,7 @@ namespace lcs
 						}
 						$elif(jtype == static_cast<uint>(JointConstraintType::Revolute))
 						{
-							Float3x3 R_A = make_float3x3(q[1], q[2], q[3]);
-							Float3x3 R_B = make_float3x3(q[5], q[6], q[7]);
-							Float3x3 R_A_T = transpose(R_A);
-							Float3x3 R_ab = R_A_T * R_B;
-							Float3x3 R_ab_rest = make_float3x3(rest_rot_c0, rest_rot_c1, rest_rot_c2);
-							Float3x3 R_ab_rest_T = transpose(R_ab_rest);
-							Float3x3 R_delta = R_ab * R_ab_rest_T;
-							Float	 sx_d = R_delta[2][1] - R_delta[1][2];
-							Float	 sy_d = R_delta[0][2] - R_delta[2][0];
-							Float	 sz_d = R_delta[1][0] - R_delta[0][1];
-							Float	 axl = sqrt(dot(axis_a, axis_a));
-							Float	 ivl = select(1.0f, 1.0f / axl, axl > 1e-12f);
-							Float3	 axn = axis_a * ivl;
-							Float	 st = 0.5f * (axn.x * sx_d + axn.y * sy_d + axn.z * sz_d);
-							Float	 tr = R_delta[0][0] + R_delta[1][1] + R_delta[2][2];
-							Float	 ct = 0.5f * (tr - 1.0f);
-							q_cur = luisa::compute::atan2(st, ct);
+							q_cur = detail::revolute_joint_constaint::compute_angle<Float, Float3>(q, rest_rot_c0, rest_rot_c1, rest_rot_c2, axis_a);
 						};
 						Float diff = q_cur - target;
 						energy += 0.5f * kp * diff * diff;
@@ -298,6 +247,9 @@ namespace lcs
 					// Revolute
 					auto eval = detail::revolute_joint_constaint::evaluate<Float, Float3, Float3x3>(
 						q, anchor_a, anchor_b, rest_pos_delta, axis_a, axis_b, stiff.x, stiff.y, I);
+					const Float2 ang_lim = joint.slide_limits->read(joint_idx);
+					detail::revolute_joint_constaint::add_angle_penalty<Float, Float3, Float3x3>(
+						eval, q, rest_rot_c0, rest_rot_c1, rest_rot_c2, axis_a, ang_lim.x, ang_lim.y, stiff.x);
 					for (uint i = 0; i < 8; ++i)
 						joint.constraint_gradients->write(joint_idx * 8u + i, eval.gradients[i]);
 					for (uint i = 0; i < 8; ++i)
@@ -330,86 +282,10 @@ namespace lcs
 						}
 						$elif(jtype == static_cast<uint>(JointConstraintType::Revolute))
 						{
-							Float3x3 R_A = make_float3x3(q[1], q[2], q[3]);
-							Float3x3 R_B = make_float3x3(q[5], q[6], q[7]);
-							Float3x3 R_ab = transpose(R_A) * R_B;
-							Float3x3 R_ab_rest = make_float3x3(rest_rot_c0, rest_rot_c1, rest_rot_c2);
-							Float3x3 R_delta = R_ab * transpose(R_ab_rest);
-							Float	 sx_d = R_delta[2][1] - R_delta[1][2];
-							Float	 sy_d = R_delta[0][2] - R_delta[2][0];
-							Float	 sz_d = R_delta[1][0] - R_delta[0][1];
-							Float	 axl = sqrt(dot(axis_a, axis_a));
-							Float	 ivl = select(1.0f, 1.0f / axl, axl > 1e-12f);
-							Float3	 axn = axis_a * ivl;
-							Float	 st = 0.5f * (axn.x * sx_d + axn.y * sy_d + axn.z * sz_d);
-							Float	 tr = R_delta[0][0] + R_delta[1][1] + R_delta[2][2];
-							Float	 ct = 0.5f * (tr - 1.0f);
-							q_cur = luisa::compute::atan2(st, ct);
-							Float  denom = st * st + ct * ct;
-							Float  safe_d = max(denom, 1e-12f);
-							Float  inv_d = 1.0f / safe_d;
-							Float3 R_rest_cols[3] = { rest_rot_c0, rest_rot_c1, rest_rot_c2 };
-							for (int kk = 1; kk <= 7; ++kk)
-							{
-								if (kk == 4)
-									continue;
-								Float3 ds = make_float3(0.0f);
-								Float3 dc = make_float3(0.0f);
-								if (kk >= 1 && kk <= 3)
-								{
-									int r = kk - 1;
-									for (int cc = 0; cc < 3; ++cc)
-									{
-										Float3 dR = q[5] * R_rest_cols[cc].x + q[6] * R_rest_cols[cc].y + q[7] * R_rest_cols[cc].z;
-										if (cc == r)
-											dc = dc + 0.5f * dR;
-										Float cx = 0.0f, cy = 0.0f, cz = 0.0f;
-										if (cc == 2 && r == 1)
-											cx = 1.0f;
-										if (cc == 1 && r == 2)
-											cx = -1.0f;
-										if (cc == 0 && r == 2)
-											cy = 1.0f;
-										if (cc == 2 && r == 0)
-											cy = -1.0f;
-										if (cc == 1 && r == 0)
-											cz = 1.0f;
-										if (cc == 0 && r == 1)
-											cz = -1.0f;
-										Float coeff = 0.5f * (axn.x * cx + axn.y * cy + axn.z * cz);
-										ds = ds + coeff * dR;
-									}
-								}
-								else
-								{
-									int cB = kk - 5;
-									for (int rr = 0; rr < 3; ++rr)
-									{
-										for (int cc = 0; cc < 3; ++cc)
-										{
-											Float3 dR = q[1 + rr] * R_rest_cols[cc][cB];
-											if (cc == rr)
-												dc = dc + 0.5f * dR;
-											Float cx = 0.0f, cy = 0.0f, cz = 0.0f;
-											if (cc == 2 && rr == 1)
-												cx = 1.0f;
-											if (cc == 1 && rr == 2)
-												cx = -1.0f;
-											if (cc == 0 && rr == 2)
-												cy = 1.0f;
-											if (cc == 2 && rr == 0)
-												cy = -1.0f;
-											if (cc == 1 && rr == 0)
-												cz = 1.0f;
-											if (cc == 0 && rr == 1)
-												cz = -1.0f;
-											Float coeff = 0.5f * (axn.x * cx + axn.y * cy + axn.z * cz);
-											ds = ds + coeff * dR;
-										}
-									}
-								}
-								v[kk] = (ct * ds - st * dc) * inv_d;
-							}
+							const auto angle_eval = detail::revolute_joint_constaint::evaluate_angle<Float, Float3>(q, rest_rot_c0, rest_rot_c1, rest_rot_c2, axis_a);
+							q_cur = angle_eval.angle;
+							for (uint vi2 = 0; vi2 < 8; ++vi2)
+								v[vi2] = angle_eval.gradients[vi2];
 						};
 
 						Float residual = q_cur - drive.x;
@@ -528,6 +404,9 @@ namespace lcs
 						// Revolute
 						auto eval = detail::revolute_joint_constaint::evaluate<float, float3, float3x3>(
 							q, anchor_a, anchor_b, rest_pos_delta, axis_a, axis_b, stiff.x, stiff.y, I);
+						const float2 ang_lim = joint_data.slide_limits[joint_idx];
+						detail::revolute_joint_constaint::add_angle_penalty<float, float3, float3x3>(
+							eval, q, rest_rot_c0, rest_rot_c1, rest_rot_c2, axis_a, ang_lim.x, ang_lim.y, stiff.x);
 						for (uint i = 0; i < 8; ++i)
 							joint_data.constraint_gradients[joint_idx * 8u + i] = eval.gradients[i];
 						for (uint i = 0; i < 8; ++i)
@@ -559,25 +438,10 @@ namespace lcs
 							}
 							else if (jtype == static_cast<uint>(JointConstraintType::Revolute))
 							{
-								float3x3 R_A = luisa::make_float3x3(q[1], q[2], q[3]);
-								float3x3 R_B = luisa::make_float3x3(q[5], q[6], q[7]);
-								float3x3 R_ab = luisa::transpose(R_A) * R_B;
-								float3x3 R_ab_rest = luisa::make_float3x3(rest_rot_c0, rest_rot_c1, rest_rot_c2);
-								float3x3 R_delta = R_ab * luisa::transpose(R_ab_rest);
-								float	 sx_d = R_delta[2][1] - R_delta[1][2];
-								float	 sy_d = R_delta[0][2] - R_delta[2][0];
-								float	 sz_d = R_delta[1][0] - R_delta[0][1];
-								float	 axl = std::sqrt(luisa::dot(axis_a, axis_a));
-								float	 ivl = axl > 1e-12f ? 1.0f / axl : 1.0f;
-								float3	 axn = axis_a * ivl;
-								float	 st = 0.5f * (axn.x * sx_d + axn.y * sy_d + axn.z * sz_d);
-								float	 tr = R_delta[0][0] + R_delta[1][1] + R_delta[2][2];
-								float	 ct = 0.5f * (tr - 1.0f);
-								q_cur = std::atan2(st, ct);
-								// Skip full gradient for host — drive energy penalty
-								// is sufficient through the energy term alone.
+								const auto angle_eval = detail::revolute_joint_constaint::evaluate_angle<float, float3>(q, rest_rot_c0, rest_rot_c1, rest_rot_c2, axis_a);
+								q_cur = angle_eval.angle;
 								for (int i = 0; i < 8; ++i)
-									v[i] = luisa::make_float3(0.0f);
+									v[i] = angle_eval.gradients[i];
 							}
 
 							float residual = q_cur - drive.x;

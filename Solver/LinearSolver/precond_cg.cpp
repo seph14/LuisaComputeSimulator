@@ -563,11 +563,12 @@ namespace lcs
 		{
 			LUISA_ERROR("cgX exist NAN/INF value : {}", infinity_norm);
 		}
+		const float relative_error = normR_0 > 0.0f ? normR / normR_0 : 0.0f;
 		if (get_scene_params().print_pcg_info)
 			LUISA_INFO("  In newton iter {:2}, PCG iters = {:3}, error = {:7.6f}, max_element(p) = {:.3e}{}",
 				get_scene_params().current_nonlinear_iter,
 				iter,
-				normR / normR_0,
+				relative_error,
 				infinity_norm,
 				"");
 
@@ -764,11 +765,12 @@ namespace lcs
 		{
 			LUISA_ERROR("cgX exist NAN/INF value : {}", infinity_norm);
 		}
+		const float relative_error = normR_0 > 0.0f ? normR / normR_0 : 0.0f;
 		if (get_scene_params().print_pcg_info)
 			LUISA_INFO("  In newton iter {:2}, PCG iters = {:3}, error = {:7.6f}, max_element(p) = {:.3e}{}",
 				get_scene_params().current_nonlinear_iter,
 				iter,
-				normR / normR_0,
+				relative_error,
 				infinity_norm,
 				"");
 	}

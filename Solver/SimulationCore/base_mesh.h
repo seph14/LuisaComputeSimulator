@@ -114,6 +114,7 @@ namespace lcs
 
 		// Mesh attrubution
 		BufferType<float> sa_body_mass;
+		BufferType<float> sa_body_density;
 		BufferType<float> sa_vert_mass;
 		BufferType<float> sa_vert_mass_inv;
 		BufferType<uint>  sa_is_fixed; // TODO: uchar

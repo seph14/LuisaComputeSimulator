@@ -5,6 +5,7 @@
 #include "Initializer/initializer_utils.h"
 #include "Utils/cpu_parallel.h"
 #include <algorithm>
+#include <cmath>
 #include <numeric>
 
 namespace lcs
@@ -515,8 +516,10 @@ namespace lcs
 			// Init mass info
 			{
 				mesh_data->sa_body_mass.resize(num_meshes);
+				mesh_data->sa_body_density.resize(num_meshes);
 				mesh_data->sa_rest_body_volume.resize(num_meshes, 0.0f);
 				mesh_data->sa_rest_body_area.resize(num_meshes, 0.0f);
+				constexpr float min_body_volume = 1.0e-12f;
 				for (uint meshIdx = 0; meshIdx < num_meshes; meshIdx++)
 				{
 					const auto& shell_info = world_data[meshIdx];
@@ -583,14 +586,68 @@ namespace lcs
 
 					const float input_mass = shell_info.get_mass();
 					const float input_density = shell_info.get_density();
-					mesh_data->sa_body_mass[meshIdx] = input_mass != 0.0f ? input_mass : sum_volume * input_density;
+					if (!std::isfinite(sum_volume) || std::abs(sum_volume) <= min_body_volume)
+					{
+						LUISA_ERROR("Mesh {} ({}) has invalid body volume {}; cannot initialize mass",
+							meshIdx,
+							shell_info.get_model_name(),
+							sum_volume);
+					}
 
-					LUISA_INFO("Mesh {}: name = {}, volume = {:3.2e}{}, body mass = {:3.2e}, avg vert mass = {:3.2e}",
+					float body_mass = 0.0f;
+					float body_density = 0.0f;
+					if (input_mass != 0.0f)
+					{
+						if (!std::isfinite(input_mass) || input_mass <= 0.0f)
+						{
+							LUISA_ERROR("Mesh {} ({}) has invalid explicit mass {}",
+								meshIdx,
+								shell_info.get_model_name(),
+								input_mass);
+						}
+						body_mass = input_mass;
+						body_density = body_mass / sum_volume;
+					}
+					else
+					{
+						if (!std::isfinite(input_density) || input_density <= 0.0f)
+						{
+							LUISA_ERROR("Mesh {} ({}) has invalid density {}",
+								meshIdx,
+								shell_info.get_model_name(),
+								input_density);
+						}
+						body_density = input_density;
+						body_mass = sum_volume * body_density;
+					}
+					if (!std::isfinite(body_mass) || body_mass <= 0.0f)
+					{
+						LUISA_ERROR("Mesh {} ({}) resolved invalid body mass {} from volume {} and density {}",
+							meshIdx,
+							shell_info.get_model_name(),
+							body_mass,
+							sum_volume,
+							body_density);
+					}
+					if (!std::isfinite(body_density))
+					{
+						LUISA_ERROR("Mesh {} ({}) resolved invalid body density {} from mass {} and volume {}",
+							meshIdx,
+							shell_info.get_model_name(),
+							body_density,
+							body_mass,
+							sum_volume);
+					}
+					mesh_data->sa_body_mass[meshIdx] = body_mass;
+					mesh_data->sa_body_density[meshIdx] = body_density;
+
+					LUISA_INFO("Mesh {}: name = {}, volume = {:3.2e}{}, body mass = {:3.2e}, body density = {:3.2e}, avg vert mass = {:3.2e}",
 						meshIdx,
 						shell_info.get_model_name(),
 						sum_volume,
 						shell_info.get_is_shell() ? luisa::format(", surface area = {:3.2e}", sum_surface_area) : "",
 						mesh_data->sa_body_mass[meshIdx],
+						mesh_data->sa_body_density[meshIdx],
 						mesh_data->sa_body_mass[meshIdx]
 							/ float(mesh_data->prefix_num_verts[meshIdx + 1] - mesh_data->prefix_num_verts[meshIdx]));
 				}
@@ -681,6 +738,7 @@ namespace lcs
 			// TODO: We may not have face
 			stream
 				<< upload_buffer(device, output_data->sa_body_mass, input_data->sa_body_mass)
+				<< upload_buffer(device, output_data->sa_body_density, input_data->sa_body_density)
 				<< upload_buffer(device, output_data->sa_vert_mass, input_data->sa_vert_mass)
 				<< upload_buffer(device, output_data->sa_vert_mass_inv, input_data->sa_vert_mass_inv)
 				<< upload_buffer(device, output_data->sa_is_fixed, input_data->sa_is_fixed)

@@ -1061,6 +1061,18 @@ namespace lcs::Initializer
 					float	 M_body = 0.0f;
 					float3	 MI_body = luisa::make_float3(0.0f);
 					float3x3 I_body = luisa::make_float3x3(0.0f);
+					auto accumulate_lumped_vertex_mass = [&]()
+					{
+						for (uint vid = prefix_vid; vid < suffix_vid; vid++)
+						{
+							float  vert_mass = mesh_data->sa_vert_mass[vid];
+							float3 vert_pos = sim_data->sa_scaled_model_x[vid];
+
+							M_body += vert_mass;
+							MI_body += vert_mass * vert_pos;
+							I_body = I_body + vert_mass * outer_product(vert_pos, vert_pos);
+						}
+					};
 					if (mesh_info.get_is_shell())
 					{
 						// std::vector<float3> virtual_solid_verts((next_prefix_verts - curr_prefix_verts) * 2);
@@ -1105,30 +1117,14 @@ namespace lcs::Initializer
 						//                             MI_body,
 						//                             I_body);
 
-						for (uint vid = prefix_vid; vid < suffix_vid; vid++)
-						{
-							float  vert_mass = mesh_data->sa_vert_mass[vid];
-							float3 vert_pos = sim_data->sa_scaled_model_x[vid];
-
-							M_body += vert_mass;
-							MI_body += vert_mass * vert_pos;
-							I_body = I_body + vert_mass * outer_product(vert_pos, vert_pos);
-						}
+						accumulate_lumped_vertex_mass();
 					}
 					else // Solid body
 					{
 						// If provided tetrahedron mesh for solid part
 						if ((mesh_data->prefix_num_tets[meshIdx + 1] - mesh_data->prefix_num_tets[meshIdx]) > 0)
 						{
-							for (uint vid = prefix_vid; vid < suffix_vid; vid++)
-							{
-								float  vert_mass = mesh_data->sa_vert_mass[vid];
-								float3 vert_pos = sim_data->sa_scaled_model_x[vid];
-
-								M_body += vert_mass;
-								MI_body += vert_mass * vert_pos;
-								I_body = I_body + vert_mass * outer_product(vert_pos, vert_pos);
-							}
+							accumulate_lumped_vertex_mass();
 						}
 						else // If we only have surface mesh: integrate from surface triangles
 						{
@@ -1136,7 +1132,7 @@ namespace lcs::Initializer
 								mesh_data->sa_faces,
 								mesh_data->prefix_num_faces[meshIdx],
 								mesh_data->prefix_num_faces[meshIdx + 1],
-								mesh_info.get_density(),
+								mesh_data->sa_body_density[meshIdx],
 								M_body,
 								MI_body,
 								I_body);
@@ -1156,7 +1152,6 @@ namespace lcs::Initializer
 							body_mass.block<3, 3>(3 + i * 3, 3 + j * 3) = I_body[i][j] * EigenFloat3x3::Identity();
 
 					body_mass.diagonal() = body_mass.diagonal().cwiseMax(Epsilon);
-
 					for (uint i = 0; i < 4; i++)
 					{
 						for (uint j = 0; j < 4; j++)

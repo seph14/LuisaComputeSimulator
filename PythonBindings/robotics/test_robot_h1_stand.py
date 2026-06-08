@@ -40,6 +40,8 @@ parser.add_argument("--disable_auto_lift", action="store_true")
 parser.add_argument("--swap_yz", action="store_true",
                     help="Swap URDF Y/Z axes before building (default: off)")
 parser.add_argument("--disable_floor", action="store_true")
+parser.add_argument("--fixed_base", action="store_true",
+                    help="Force the root link to stay fixed even when --disable_floor is set")
 args = parser.parse_args()
 
 FRAMES = args.advance_frames
@@ -80,6 +82,9 @@ rs.init_device()
 rs.setup_z_up(dt=1.0 / 300.0)
 config = rs.config
 config.set_use_floor(not args.disable_floor)
+config.set_use_gpu(False)
+config.set_print_collision_info(True)
+config.set_print_pcg_info(True)
 
 # Read floor normal from config (auto-derived by set_up_axis)
 floor_normal = (float(config.get_floor_normal().x),
@@ -87,9 +92,11 @@ floor_normal = (float(config.get_floor_normal().x),
                 float(config.get_floor_normal().z))
 
 # ── Build robot (swap_yz=True: URDF Y-up → solver Z-up) ────────────
-builder = RobotBuilder(rs, model, fixed_base=True)
+fixed_base = bool(args.fixed_base or not args.disable_floor)
+builder = RobotBuilder(rs, model, fixed_base=fixed_base)
 swap_yz = bool(args.swap_yz)
 print(f"  Axis mapping: swap_yz={'on' if swap_yz else 'off'}")
+print(f"  Base mode: {'fixed' if fixed_base else 'floating'}")
 builder.build(
     mesh_root=os.path.dirname(H1_URDF),
     base_translation=(0.0, 0.0, args.base_height),
@@ -127,6 +134,8 @@ floor_height = float(np.dot(
                 float(config.get_floor().z)]),
     np.asarray(floor_normal)))
 initial_min_floor = scene_min_floor_coord(rs, body_names, floor_normal)
+initial_root_center = rs.get_body_center(model.root_link)
+initial_root_height = float(np.dot(np.asarray(initial_root_center), np.asarray(floor_normal)))
 print(f"  Floor: height={floor_height:.4f}, normal={floor_normal}, min={initial_min_floor:.4f}, "
       f"auto_lift={'off' if args.disable_auto_lift else 'on'}")
 
@@ -147,14 +156,25 @@ if args.headless:
     all_pass = True
     final_q = rs.get_all_joint_values()
 
-    # 1. All vertices above ground (Newton: all bodies z > 0)
     final_min_floor = scene_min_floor_coord(rs, body_names, floor_normal)
-    above_ground = final_min_floor >= floor_height - 1.0e-3
-    if above_ground:
-        print(f"  [PASS] All vertices above ground (min={final_min_floor:.4f})")
+    final_root_center = rs.get_body_center(model.root_link)
+    final_root_height = float(np.dot(np.asarray(final_root_center), np.asarray(floor_normal)))
+
+    if args.disable_floor:
+        root_drop = final_root_height - initial_root_height
+        freefall_ok = root_drop < -1.0e-5
+        print(f"  [{'PASS' if freefall_ok else 'FAIL'}] "
+              f"Floating root free fall: drop={root_drop:.6f} m")
+        if not freefall_ok:
+            all_pass = False
     else:
-        print(f"  [FAIL] min floor coord={final_min_floor:.4f} below floor={floor_height:.4f}")
-        all_pass = False
+        # 1. All vertices above ground (Newton: all bodies z > 0)
+        above_ground = final_min_floor >= floor_height - 1.0e-3
+        if above_ground:
+            print(f"  [PASS] All vertices above ground (min={final_min_floor:.4f})")
+        else:
+            print(f"  [FAIL] min floor coord={final_min_floor:.4f} below floor={floor_height:.4f}")
+            all_pass = False
 
     # 2. Joint drift
     max_drift = max(abs(float(final_q[i]) - float(initial_q[i]))
@@ -165,24 +185,25 @@ if args.headless:
     if max_drift > drift_limit:
         all_pass = False
 
-    # 3. Body velocities (Newton: all body velocities < 0.005)
-    vel_threshold = 0.05  # staged: penalty joints can't reach 0.005
-    max_vel = 0.0
-    vel_ok = True
-    for bname in body_names:
-        try:
-            v = rs.get_body_velocity(bname)
-            s = float(np.sqrt(np.sum(np.array(v[:3])**2)))
-            if s > vel_threshold:
-                vel_ok = False
-                if s > max_vel * 2:  # only print worst offenders
-                    print(f"  [WARN] {bname}: speed={s:.4f} m/s > {vel_threshold}")
-            max_vel = max(max_vel, s)
-        except Exception:
-            pass
-    print(f"  [{'PASS' if vel_ok else 'STAGED'}] "
-          f"Body velocity: max={max_vel:.4f} m/s "
-          f"(staged: <{vel_threshold}, Newton target: <0.005)")
+    if not args.disable_floor:
+        # 3. Body velocities (Newton: all body velocities < 0.005)
+        vel_threshold = 0.05  # staged: penalty joints can't reach 0.005
+        max_vel = 0.0
+        vel_ok = True
+        for bname in body_names:
+            try:
+                v = rs.get_body_velocity(bname)
+                s = float(np.sqrt(np.sum(np.array(v[:3])**2)))
+                if s > vel_threshold:
+                    vel_ok = False
+                    if s > max_vel * 2:  # only print worst offenders
+                        print(f"  [WARN] {bname}: speed={s:.4f} m/s > {vel_threshold}")
+                max_vel = max(max_vel, s)
+            except Exception:
+                pass
+        print(f"  [{'PASS' if vel_ok else 'STAGED'}] "
+              f"Body velocity: max={max_vel:.4f} m/s "
+              f"(staged: <{vel_threshold}, Newton target: <0.005)")
 
     # 4. Sample body positions
     height_axis = int(np.argmax(np.abs(floor_normal)))  # 1=Y-up, 2=Z-up
@@ -200,8 +221,11 @@ if args.headless:
     # ── Parity gaps ──────────────────────────────────────────────
     print(f"\n  Parity gaps (vs Newton robot_h1):")
     print(f"    - world_count: 1 (Newton: 4)")
-    print(f"    - Fixed base (Newton: floating base)")
-    print(f"    - Body velocity staged <{vel_threshold} (Newton: <0.005)")
+    print(f"    - Base mode: {'fixed' if fixed_base else 'floating'} (Newton: floating base)")
+    if not args.disable_floor:
+        print(f"    - Body velocity staged <{vel_threshold} (Newton: <0.005)")
+    else:
+        print(f"    - Body velocity check skipped for free-fall")
     print(f"    - No mesh bounding box approximation")
     print(f"    - No joint limit_ke/kd/friction (Newton: limit_ke=1e3)")
     print(f"    - Solver params not aligned (Newton: iterations=100, ls=50)")

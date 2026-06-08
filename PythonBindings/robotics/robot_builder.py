@@ -309,7 +309,10 @@ class RobotBuilder:
             rx = np.arctan2(m[2, 1], m[1, 1])
             ry = np.arctan2(sy, cy)
             rz = 0.0
-        return np.array([rx, ry, rz], dtype=np.float64)
+        # LCS make_model_matrix applies the opposite sign convention for
+        # Euler channels relative to the standard matrices used by the URDF
+        # parser and trimesh transforms.
+        return np.array([-rx, -ry, -rz], dtype=np.float64)
 
     def _find_joint(self, parent: str, child: str) -> URDFJoint | None:
         for j in self._model.joints:

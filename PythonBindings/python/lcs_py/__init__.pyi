@@ -241,7 +241,7 @@ class NewtonSolver:
         relative offset perpendicular to the axis and locks relative orientation; slide_min
         and slide_max bound the scalar coordinate along the axis.
         """
-    def add_revolute_joint(self, body_a_registration: int, body_b_registration: int, anchor_a_local: numpy.ndarray[numpy.float32], anchor_b_local: numpy.ndarray[numpy.float32], axis_world: numpy.ndarray[numpy.float32], axis_a_local: numpy.ndarray[numpy.float32], axis_b_local: numpy.ndarray[numpy.float32], stiffness_pos: float = 10000.0, stiffness_axis: float = 1000.0) -> None:
+    def add_revolute_joint(self, body_a_registration: int, body_b_registration: int, anchor_a_local: numpy.ndarray[numpy.float32], anchor_b_local: numpy.ndarray[numpy.float32], axis_world: numpy.ndarray[numpy.float32], axis_a_local: numpy.ndarray[numpy.float32], axis_b_local: numpy.ndarray[numpy.float32], stiffness_pos: float = 10000.0, stiffness_axis: float = 1000.0, lower_angle: float = -3.4028234663852886e+38, upper_angle: float = 3.4028234663852886e+38) -> None:
         """
         Add a revolute/hinge joint between two rigid bodies.
         

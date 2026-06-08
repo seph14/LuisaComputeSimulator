@@ -159,8 +159,16 @@ class RobotBuilder:
             if parent_id is None or child_id is None:
                 continue
 
-            # Joint anchor in world frame (from parent origin)
-            axis = axis_xform @ joint.axis.astype(np.float64)
+            # URDF joint axes are expressed in the joint frame. Convert them
+            # separately for parent-local, child-local, and rest world use.
+            joint_axis = joint.axis.astype(np.float64)
+            joint_rot = self._rpy_to_matrix(joint.origin_rpy)
+            parent_transform = link_transforms.get(joint.parent, np.eye(4))
+            parent_rot = parent_transform[:3, :3]
+
+            axis_parent_local = axis_xform @ (joint_rot @ joint_axis)
+            axis_child_local = axis_xform @ joint_axis
+            axis_world = axis_xform @ (parent_rot @ joint_rot @ joint_axis)
             anchor_parent = axis_xform @ joint.origin_xyz.astype(np.float64)
             anchor_child = np.zeros(3, dtype=np.float64)
 
@@ -173,14 +181,16 @@ class RobotBuilder:
                 upper_angle = joint.upper_limit if joint.has_limits else 1e10
                 self._rs.add_revolute_joint(
                     joint.parent, joint.child,
-                    anchor_parent, anchor_child, axis,
+                    anchor_parent, anchor_child, axis_world,
+                    axis_a_local=axis_parent_local,
+                    axis_b_local=axis_child_local,
                     stiffness_pos=5.0e4, stiffness_axis=2.0e3,
                     lower_angle=lower_angle, upper_angle=upper_angle,
                 )
             elif jtype == "prismatic":
                 self._rs.add_prismatic_joint(
                     joint.parent, joint.child,
-                    anchor_parent, anchor_child, axis,
+                    anchor_parent, anchor_child, axis_world,
                     stiffness_pos=5.0e4, stiffness_rot=1.0e4,
                     slide_min=joint.lower_limit,
                     slide_max=joint.upper_limit,

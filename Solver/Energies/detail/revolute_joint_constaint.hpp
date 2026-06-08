@@ -42,18 +42,18 @@ namespace lcs::detail::revolute_joint_constaint
 	{
 		const Vec3T rest_cols[3] = { rest_rot_col0_a_to_b, rest_rot_col1_a_to_b, rest_rot_col2_a_to_b };
 
-		auto rest_col_in_b = [&](const int col)
+		auto rest_delta_col_in_b = [&](const int col)
 		{
-			return q[5] * rest_cols[col].x + q[6] * rest_cols[col].y + q[7] * rest_cols[col].z;
+			return q[5] * rest_cols[0][col] + q[6] * rest_cols[1][col] + q[7] * rest_cols[2][col];
 		};
 		auto R_delta = [&](const int row, const int col)
 		{
-			return dot(q[1 + row], rest_col_in_b(col));
+			return dot(q[1 + row], rest_delta_col_in_b(col));
 		};
 
-		const ScalarT sx = R_delta(1, 2) - R_delta(2, 1);
-		const ScalarT sy = R_delta(2, 0) - R_delta(0, 2);
-		const ScalarT sz = R_delta(0, 1) - R_delta(1, 0);
+		const ScalarT sx = R_delta(2, 1) - R_delta(1, 2);
+		const ScalarT sy = R_delta(0, 2) - R_delta(2, 0);
+		const ScalarT sz = R_delta(1, 0) - R_delta(0, 1);
 
 		const ScalarT axis_len = sqrt_scalar(dot(axis_a_local, axis_a_local));
 		const ScalarT inv_len = ScalarT(1.0f) / max_scalar(axis_len, ScalarT(1.0e-12f));
@@ -81,18 +81,18 @@ namespace lcs::detail::revolute_joint_constaint
 		const Vec3T rest_cols[3] = { rest_rot_col0_a_to_b, rest_rot_col1_a_to_b, rest_rot_col2_a_to_b };
 		out.angle = compute_angle<ScalarT, Vec3T>(q, rest_rot_col0_a_to_b, rest_rot_col1_a_to_b, rest_rot_col2_a_to_b, axis_a_local);
 
-		auto rest_col_in_b = [&](const int col)
+		auto rest_delta_col_in_b = [&](const int col)
 		{
-			return q[5] * rest_cols[col].x + q[6] * rest_cols[col].y + q[7] * rest_cols[col].z;
+			return q[5] * rest_cols[0][col] + q[6] * rest_cols[1][col] + q[7] * rest_cols[2][col];
 		};
 		auto R_delta = [&](const int row, const int col)
 		{
-			return dot(q[1 + row], rest_col_in_b(col));
+			return dot(q[1 + row], rest_delta_col_in_b(col));
 		};
 
-		const ScalarT sx = R_delta(1, 2) - R_delta(2, 1);
-		const ScalarT sy = R_delta(2, 0) - R_delta(0, 2);
-		const ScalarT sz = R_delta(0, 1) - R_delta(1, 0);
+		const ScalarT sx = R_delta(2, 1) - R_delta(1, 2);
+		const ScalarT sy = R_delta(0, 2) - R_delta(2, 0);
+		const ScalarT sz = R_delta(1, 0) - R_delta(0, 1);
 		const ScalarT axis_len = sqrt_scalar(dot(axis_a_local, axis_a_local));
 		const ScalarT inv_len = ScalarT(1.0f) / max_scalar(axis_len, ScalarT(1.0e-12f));
 		const Vec3T	  axis_n = axis_a_local * inv_len;
@@ -111,22 +111,22 @@ namespace lcs::detail::revolute_joint_constaint
 				const int row = kk - 1;
 				for (int col = 0; col < 3; ++col)
 				{
-					const Vec3T dR = rest_col_in_b(col);
+					const Vec3T dR = rest_delta_col_in_b(col);
 					if (col == row)
 						dc += ScalarT(0.5f) * dR;
 
 					ScalarT cx = ScalarT(0.0f), cy = ScalarT(0.0f), cz = ScalarT(0.0f);
-					if (col == 2 && row == 1)
-						cx = ScalarT(1.0f);
 					if (col == 1 && row == 2)
+						cx = ScalarT(1.0f);
+					if (col == 2 && row == 1)
 						cx = ScalarT(-1.0f);
-					if (col == 0 && row == 2)
-						cy = ScalarT(1.0f);
 					if (col == 2 && row == 0)
+						cy = ScalarT(1.0f);
+					if (col == 0 && row == 2)
 						cy = ScalarT(-1.0f);
-					if (col == 1 && row == 0)
-						cz = ScalarT(1.0f);
 					if (col == 0 && row == 1)
+						cz = ScalarT(1.0f);
+					if (col == 1 && row == 0)
 						cz = ScalarT(-1.0f);
 					const ScalarT coeff = ScalarT(0.5f) * (axis_n.x * cx + axis_n.y * cy + axis_n.z * cz);
 					ds += coeff * dR;
@@ -139,22 +139,22 @@ namespace lcs::detail::revolute_joint_constaint
 				{
 					for (int col = 0; col < 3; ++col)
 					{
-						const Vec3T dR = q[1 + row] * rest_cols[col][col_b];
+						const Vec3T dR = q[1 + row] * rest_cols[col_b][col];
 						if (col == row)
 							dc += ScalarT(0.5f) * dR;
 
 						ScalarT cx = ScalarT(0.0f), cy = ScalarT(0.0f), cz = ScalarT(0.0f);
-						if (col == 2 && row == 1)
-							cx = ScalarT(1.0f);
 						if (col == 1 && row == 2)
+							cx = ScalarT(1.0f);
+						if (col == 2 && row == 1)
 							cx = ScalarT(-1.0f);
-						if (col == 0 && row == 2)
-							cy = ScalarT(1.0f);
 						if (col == 2 && row == 0)
+							cy = ScalarT(1.0f);
+						if (col == 0 && row == 2)
 							cy = ScalarT(-1.0f);
-						if (col == 1 && row == 0)
-							cz = ScalarT(1.0f);
 						if (col == 0 && row == 1)
+							cz = ScalarT(1.0f);
+						if (col == 1 && row == 0)
 							cz = ScalarT(-1.0f);
 						const ScalarT coeff = ScalarT(0.5f) * (axis_n.x * cx + axis_n.y * cy + axis_n.z * cz);
 						ds += coeff * dR;

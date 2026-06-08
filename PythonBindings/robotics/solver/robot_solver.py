@@ -306,6 +306,8 @@ class RobotSolver:
                         kwargs.get("axis_b", kwargs["axis"]),
                         kwargs.get("stiffness_pos", 5.0e4),
                         kwargs.get("stiffness_axis", 2.0e3),
+                        kwargs.get("lower_angle", -1e10),
+                        kwargs.get("upper_angle", 1e10),
                     )
                 elif jtype == "ball":
                     self._solver.add_ball_joint(

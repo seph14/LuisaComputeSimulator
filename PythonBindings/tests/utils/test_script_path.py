@@ -7,7 +7,12 @@ Usage:
 """
 
 import os
+import sys
 
 PROJECT_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..")
 )
+
+BUILD_BIN = os.path.join(PROJECT_ROOT, "build", "bin")
+if os.path.isdir(BUILD_BIN) and BUILD_BIN not in sys.path:
+    sys.path.insert(0, BUILD_BIN)

@@ -867,7 +867,7 @@ struct PyNewtonBuilder
 	{
 		std::vector<float> values;
 		solver_ptr->get_joint_values(values);
-		std::vector<ssize_t> shape = { static_cast<ssize_t>(values.size()) };
+		std::vector<py::ssize_t> shape = { static_cast<py::ssize_t>(values.size()) };
 		py::array_t<float>	 result(shape);
 		if (!values.empty())
 			std::memcpy(result.mutable_data(), values.data(), values.size() * sizeof(float));
@@ -877,7 +877,7 @@ struct PyNewtonBuilder
 	py::array_t<uint32_t> get_all_joint_types() const
 	{
 		const uint			  cnt = solver_ptr->get_joint_count();
-		std::vector<ssize_t>  shape = { static_cast<ssize_t>(cnt) };
+		std::vector<py::ssize_t>  shape = { static_cast<py::ssize_t>(cnt) };
 		py::array_t<uint32_t> result(shape);
 		auto				  buf = result.mutable_data();
 		for (uint i = 0; i < cnt; ++i)
@@ -901,7 +901,7 @@ struct PyNewtonBuilder
 	{
 		std::vector<float> values;
 		solver_ptr->get_joint_velocities(values);
-		std::vector<ssize_t> shape = { static_cast<ssize_t>(values.size()) };
+		std::vector<py::ssize_t> shape = { static_cast<py::ssize_t>(values.size()) };
 		py::array_t<float>	 result(shape);
 		if (!values.empty())
 			std::memcpy(result.mutable_data(), values.data(), values.size() * sizeof(float));
@@ -911,7 +911,7 @@ struct PyNewtonBuilder
 	py::array_t<float> get_rigid_body_velocity(uint registration_id) const
 	{
 		auto			   v = solver_ptr->get_rigid_body_velocity(registration_id);
-		py::array_t<float> result({ (size_t)6 });
+		py::array_t<float> result(static_cast<py::ssize_t>(6));
 		auto			   buf = result.mutable_data();
 		for (int k = 0; k < 6; ++k)
 			buf[k] = v[k];

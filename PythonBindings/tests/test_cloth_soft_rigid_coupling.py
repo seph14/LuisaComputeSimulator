@@ -9,8 +9,7 @@ from run_tests import create_default_parser
 args = create_default_parser().parse_args()
 
 # Initialize LuisaCompute device
-import platform
-backend = "metal" if platform.system() == "Darwin" else "cuda" # backends: cuda, dx, vk, metal (if supported on the platform)
+backend = args.backend # backends: cuda, dx, vk, metal (if supported on the platform)
 solver = lcs.NewtonSolver()
 solver.init_device(backend_name=backend)
 
@@ -52,15 +51,15 @@ tet.set_scale(0.2)
 tet_id = solver.register_world_data(tet)
 
 
+# Set scene parameters before initialization so collision setup sees them.
+config_ref = solver.get_config()
+config_ref.set_use_floor(False)
+
 # Initialize the solver (builds internal data structures, compiles shaders, etc.)
 solver.init_solver()
 
 # Get mesh info
 solver.print_registered_meshes_info()
-
-# Set scene parameters
-config_ref = solver.get_config()
-config_ref.set_use_floor(False)
 
 # Output directory (for optional file saving)
 output_dir = os.path.join(PROJECT_ROOT, "Resources", "OutputMesh")

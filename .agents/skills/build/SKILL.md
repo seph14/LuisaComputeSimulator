@@ -28,6 +28,9 @@ If `lcs_config.ini` sets `LCS_PYTHON_EXECUTABLE`, point that key to `<repo>/.ven
 With the venv activated, configure and build:
 
 ```bash
+uv venv --python 3.13
+.\.venv\Scripts\activate
+
 # Configure — MUST include -DLCS_BUILD_PYBINDINGS=ON
 cmake -S . -B build \
       -DLCS_BUILD_PYBINDINGS=ON \

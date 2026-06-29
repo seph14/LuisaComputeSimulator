@@ -18,6 +18,7 @@ option(LCS_ENABLE_TEST "Enable Unit Tests" OFF)
 option(LCS_USE_SYSTEM_PARALLEL_FOR "Enable system parallel_for" OFF)
 option(LCS_BUILD_MAIN_APPLICATION "Build Executable Simulation Application" ON)
 option(LCS_BUILD_PYBINDINGS "Build Python bindings (requires pybind11)" OFF)
+option(LCS_NO_INTERNAL_FIBER_SCHEDULER "Suppress the built-in luisa::fiber::scheduler member in SolverInterface (use when embedding in a host that already binds one)" OFF)
 set(LCS_PYTHON_EXECUTABLE "" CACHE FILEPATH "Path to the Python executable to build python bindings for (optional)")
 
 # In scikit-build-core (pip install / pip wheel) context, override defaults
@@ -45,13 +46,21 @@ file(GLOB_RECURSE LUISA_COMPUTE_SOLVER_LIB_HEADERS CONFIGURE_DEPENDS Solver/*.h 
 add_library(luisa-compute-solver-lib STATIC ${LUISA_COMPUTE_SOLVER_LIB_SOURCES} ${LUISA_COMPUTE_SOLVER_LIB_HEADERS})
 target_include_directories(luisa-compute-solver-lib PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Solver>)
 set_target_properties(luisa-compute-solver-lib PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if (LCS_NO_INTERNAL_FIBER_SCHEDULER)
+    target_compile_definitions(luisa-compute-solver-lib PUBLIC LCS_NO_INTERNAL_FIBER_SCHEDULER)
+endif ()
 
 
 
 # External
 set(EXT_PATH ${CMAKE_CURRENT_SOURCE_DIR}/ext)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/ext)
-include(${LuisaCompute_SOURCE_DIR}/scripts/setup_output_dirs.cmake)
+# LuisaCompute_SOURCE_DIR is only set by the add_subdirectory path in ext/.
+# Under find_package consumption (LCS_LUISA_COMPUTE_INSTALL_DIR), LuisaCompute
+# isn't rebuilt, so its output-dir convention script doesn't apply.
+if (DEFINED LuisaCompute_SOURCE_DIR)
+    include(${LuisaCompute_SOURCE_DIR}/scripts/setup_output_dirs.cmake)
+endif ()
 
 # Rousource
 set(LCSV_RESOURCE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Resources)

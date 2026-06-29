@@ -680,6 +680,10 @@ namespace lcs
 		float alpha = 0.0f;
 		float dot_rz = 0.0f;
 
+		const uint  pcg_check_interval = lcs::get_scene_params().pcg_check_interval;
+		const float pcg_rel_tol        = lcs::get_scene_params().pcg_rel_tol;
+		const bool  use_early_exit     = (pcg_check_interval > 0);
+
 		uint iter = 0;
 		for (iter = 0; iter < lcs::get_scene_params().pcg_iter_count; iter++)
 		{
@@ -698,32 +702,49 @@ namespace lcs
 			// 6 : init energy
 			// 7 : new energy
 
-			if (iter % 25 == 0)
+			// Early-exit: every pcg_check_interval iters, sync and compare the
+			// relative residual norm against pcg_rel_tol. Disabled when
+			// pcg_check_interval == 0 (original LCS behavior — full iter count).
+			const bool do_check = use_early_exit &&
+				(iter == 0 || ((iter + 1) % pcg_check_interval == 0));
+			if (do_check)
 			{
-				// stream
-				//     << sim_data->sa_convergence.view(4, 1).copy_to(&normR)
-				//     << luisa::compute::synchronize();
-				// LUISA_INFO("rTr = {}", normR);
-				// if (iter == 0) normR_0 = normR;
-				// if (normR == 0.0f)
-				// {
-				//     break;
-				// }
-
 				if (iter == 0)
 					stream << sim_data->sa_convergence.view(4, 1).copy_to(&normR_0);
 
 				stream << sim_data->sa_convergence.view(4, 1).copy_to(&normR)
 					   << sim_data->sa_convergence.view(1, 1).copy_to(&dot_rz) << luisa::compute::synchronize();
-				// LUISA_INFO("dot_rz = {}", dot_rz);
+
+				if (luisa::isnan(dot_rz) || luisa::isinf(dot_rz))
+				{
+					LUISA_ERROR("Exist NAN/INF in PCG iteration");
+					exit(0);
+				}
+				// Absolute floor — never exit on NaN-ish residual.
+				if (dot_rz < pcg_epsilon)
+				{
+					break;
+				}
+				// Relative tolerance — exit when residual has dropped by tol².
+				if (normR_0 > 0.0f && normR / normR_0 < pcg_rel_tol * pcg_rel_tol)
+				{
+					break;
+				}
+			}
+			else if (iter % 25 == 0)
+			{
+				// Legacy path preserved for standalone LCS apps that didn't opt in.
+				if (iter == 0)
+					stream << sim_data->sa_convergence.view(4, 1).copy_to(&normR_0);
+
+				stream << sim_data->sa_convergence.view(4, 1).copy_to(&normR)
+					   << sim_data->sa_convergence.view(1, 1).copy_to(&dot_rz) << luisa::compute::synchronize();
 				if (luisa::isnan(dot_rz) || luisa::isinf(dot_rz))
 				{
 					LUISA_ERROR("Exist NAN/INF in PCG iteration");
 					exit(0);
 				}
 				if (dot_rz < pcg_epsilon)
-				// if (normR / normR_0 < 1e-4f)
-				// if (dot_rz == 0.0f)
 				{
 					break;
 				}

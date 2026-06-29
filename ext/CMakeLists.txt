@@ -5,46 +5,70 @@ include(FetchContent)
 #
 # LuisaCompute
 #
+# Discovery order (first wins):
+#   1. LCS_LUISA_COMPUTE_INSTALL_DIR — consume a pre-built install tree via
+#      find_package(LuisaCompute CONFIG). Preferred when embedding in a host
+#      (e.g. NewTypeEngine) that already links the same LuisaCompute DLL set;
+#      avoids recompiling LuisaCompute from source and eliminates COMDAT-drift
+#      between the host's view and the solver-lib's view.
+#   2. LCS_LUISA_COMPUTE_SOURCE_DIR — add_subdirectory the local source tree.
+#      Original behavior; rebuilds LuisaCompute from source as a CMake subproject.
+#   3. FetchContent from upstream.
 if (NOT TARGET luisa::compute)
-    FetchContent_Declare(
-        luisa_compute
-        GIT_REPOSITORY https://github.com/LuisaGroup/LuisaCompute.git # https://gitee.com/celeste-huohuo/LuisaCompute.git
-        GIT_TAG 8fda2e0268c09bc3051cde913a612836036397d9
-        # GIT_TAG next
-        # GIT_SUBMODULES ""
-        SOURCE_DIR ${CMAKE_SOURCE_DIR}/ext/luisaCompute
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_Populate(luisa_compute)
-    set(LuisaCompute_SOURCE_DIR ${luisa_compute_SOURCE_DIR})
-    message(STATUS "LuisaCompute source dir: ${LuisaCompute_SOURCE_DIR}")
-    # include(${LuisaCompute_SOURCE_DIR}/scripts/setup_output_dirs.cmake)
-
-    set(LUISA_COMPUTE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(LUISA_COMPUTE_DOWNLOAD_NVCOMP OFF CACHE BOOL "" FORCE)
-    # Use the system STL on every path (plain cmake build, scikit-build wheel,
-    # editable install). The previous SKBUILD-only override forced embedded STL
-    # for `pip install -e .`, which produced a Metal backend that loaded but
-    # failed device probing on macOS. Keeping a single setting means dev and
-    # wheel builds share the same ABI as the C++ application.
-    set(LUISA_COMPUTE_USE_SYSTEM_STL ON CACHE BOOL "" FORCE)
-    set(LUISA_COMPUTE_ENABLE_RUST OFF CACHE BOOL "" FORCE)
-    set(LUISA_COMPUTE_ENABLE_REMOTE OFF CACHE BOOL "" FORCE)
-    set(LUISA_COMPUTE_ENABLE_GUI OFF CACHE BOOL "" FORCE)
-    set(LUISA_COMPUTE_ENABLE_WAYLAND ON CACHE BOOL "" FORCE)
-    set(LUISA_COMPUTE_ENABLE_CPU OFF CACHE BOOL "" FORCE)
-    if (LCS_BUILD_PYBINDINGS)
-        # scikit-build-core defines SKBUILD for the top-level project, but the
-        # embedded LuisaCompute project also treats SKBUILD as a request to build
-        # and install its own Python package. We only need LuisaCompute as a C++
-        # dependency for lcs_py here, so hide SKBUILD while adding that subproject.
-        set(_LCS_SAVED_SKBUILD ${SKBUILD})
-        set(SKBUILD OFF)
-        add_subdirectory(${LuisaCompute_SOURCE_DIR})
-        set(SKBUILD ${_LCS_SAVED_SKBUILD})
-        unset(_LCS_SAVED_SKBUILD)
+    if (DEFINED LCS_LUISA_COMPUTE_INSTALL_DIR)
+        # Pre-built install tree. Pass NO_DEFAULT_PATH so CMake doesn't pick up
+        # some other LuisaCompute install on the system.
+        find_package(LuisaCompute CONFIG REQUIRED
+                PATHS "${LCS_LUISA_COMPUTE_INSTALL_DIR}"
+                NO_DEFAULT_PATH)
+        message(STATUS "LuisaCompute consumed via find_package from: ${LCS_LUISA_COMPUTE_INSTALL_DIR}")
     else()
-        add_subdirectory(${LuisaCompute_SOURCE_DIR})
+        if (DEFINED LCS_LUISA_COMPUTE_SOURCE_DIR)
+            set(LuisaCompute_SOURCE_DIR "${LCS_LUISA_COMPUTE_SOURCE_DIR}")
+            message(STATUS "LuisaCompute source dir (local override): ${LuisaCompute_SOURCE_DIR}")
+        else()
+            FetchContent_Declare(
+                luisa_compute
+                GIT_REPOSITORY https://github.com/LuisaGroup/LuisaCompute.git # https://gitee.com/celeste-huohuo/LuisaCompute.git
+                GIT_TAG 8fda2e0268c09bc3051cde913a612836036397d9
+                # GIT_TAG next
+                # GIT_SUBMODULES ""
+                SOURCE_DIR ${CMAKE_SOURCE_DIR}/ext/luisaCompute
+                GIT_SHALLOW TRUE
+            )
+            FetchContent_Populate(luisa_compute)
+            set(LuisaCompute_SOURCE_DIR ${luisa_compute_SOURCE_DIR})
+            message(STATUS "LuisaCompute source dir: ${LuisaCompute_SOURCE_DIR}")
+        endif()
+        # include(${LuisaCompute_SOURCE_DIR}/scripts/setup_output_dirs.cmake)
+
+        set(LUISA_COMPUTE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(LUISA_COMPUTE_DOWNLOAD_NVCOMP OFF CACHE BOOL "" FORCE)
+        # Use the system STL only when building Python bindings — the pybind layer
+        # needs std:: types to interoperate with CPython. For C++-only consumers
+        # (e.g. embedding in NewTypeEngine), inherit LuisaCompute's default (EASTL)
+        # so the solver-lib's ABI matches the host's pre-built luisa DLLs.
+        if (LCS_BUILD_PYBINDINGS)
+            set(LUISA_COMPUTE_USE_SYSTEM_STL ON CACHE BOOL "" FORCE)
+        endif ()
+        set(LUISA_COMPUTE_ENABLE_RUST OFF CACHE BOOL "" FORCE)
+        set(LUISA_COMPUTE_ENABLE_REMOTE OFF CACHE BOOL "" FORCE)
+        set(LUISA_COMPUTE_ENABLE_GUI OFF CACHE BOOL "" FORCE)
+        set(LUISA_COMPUTE_ENABLE_WAYLAND ON CACHE BOOL "" FORCE)
+        set(LUISA_COMPUTE_ENABLE_CPU OFF CACHE BOOL "" FORCE)
+        if (LCS_BUILD_PYBINDINGS)
+            # scikit-build-core defines SKBUILD for the top-level project, but the
+            # embedded LuisaCompute project also treats SKBUILD as a request to build
+            # and install its own Python package. We only need LuisaCompute as a C++
+            # dependency for lcs_py here, so hide SKBUILD while adding that subproject.
+            set(_LCS_SAVED_SKBUILD ${SKBUILD})
+            set(SKBUILD OFF)
+            add_subdirectory(${LuisaCompute_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_luisa_compute)
+            set(SKBUILD ${_LCS_SAVED_SKBUILD})
+            unset(_LCS_SAVED_SKBUILD)
+        else()
+            add_subdirectory(${LuisaCompute_SOURCE_DIR} ${CMAKE_BINARY_DIR}/_luisa_compute)
+        endif()
     endif()
 endif ()
 target_link_libraries(luisa-compute-solver-lib PUBLIC luisa::compute) #  ipc::toolkit

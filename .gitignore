@@ -34,3 +34,5 @@ ext/*
 .obsidian
 lcs_config.ini
 .workbuddy
+/build-dx-debug
+/build-dx

@@ -127,6 +127,12 @@ namespace lcs
 
 	public:
 		void get_curr_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
+		// Direct GPU-side access to a registered mesh's current world-space
+		// positions. Returns a view into sim_data->sa_x covering only this
+		// mesh's vertex range. Use this to copy positions into a host-side
+		// vertex buffer on the GPU, skipping the CPU round-trip that
+		// get_curr_vertices_to_host requires.
+		luisa::compute::BufferView<float3> get_curr_positions_device(uint registration_id) const;
 		void get_rest_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions);
 		void get_triangles_to_host(std::vector<std::vector<std::array<uint, 3>>>& output_triangles);
 		uint query_sorted_index_by_registration_id(uint registration_id) const;
@@ -290,7 +296,16 @@ namespace lcs
 		//     >  fn_compute_repulsion_energy_from_ee;
 
 	protected:
+		// Fiber scheduler for host-side parallel_for. When embedding LCS in a
+		// host that already has a luisa::fiber::scheduler bound on the calling
+		// thread (e.g. NewTypeEngine's Pipeline::_fiberScheduler), the host's
+		// scheduler is reused — define LCS_NO_INTERNAL_FIBER_SCHEDULER to
+		// suppress this member and avoid marl's "Scheduler already bound"
+		// assert. Standalone LCS apps leave this undefined so the solver
+		// auto-binds its own.
+#ifndef LCS_NO_INTERNAL_FIBER_SCHEDULER
 		luisa::fiber::scheduler scheduler;
+#endif
 
 		// Device/stream state owned or borrowed by this solver instance.
 		GlobalState					 device_state;

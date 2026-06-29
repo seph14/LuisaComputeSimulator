@@ -389,6 +389,14 @@ namespace lcs
 			}
 		}
 	}
+	luisa::compute::BufferView<float3> SolverInterface::get_curr_positions_device(uint registration_id) const
+	{
+		const uint sorted_idx = query_sorted_index_by_registration_id(registration_id);
+		const uint prefix     = host_mesh_data->prefix_num_verts[sorted_idx];
+		const uint suffix     = host_mesh_data->prefix_num_verts[sorted_idx + 1];
+		const uint count      = suffix - prefix;
+		return sim_data->sa_x.view(prefix, count);
+	}
 	void SolverInterface::get_rest_vertices_to_host(std::vector<std::vector<std::array<float, 3>>>& output_positions)
 	{
 		const auto& rest_positions = host_mesh_data->sa_rest_x;

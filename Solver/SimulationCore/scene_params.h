@@ -55,6 +55,13 @@ namespace lcs
 		uint nonlinear_iter_count = 3;
 		uint pcg_iter_count = 100;
 
+		// PCG convergence early-exit. pcg_check_interval=0 disables the check
+		// (run full pcg_iter_count). Otherwise: every pcg_check_interval iters,
+		// sync, read residual norm, and break if normR/normR_0 < pcg_rel_tol.
+		// Default (0) preserves original LCS behavior.
+		uint  pcg_check_interval = 0;
+		float pcg_rel_tol        = 1e-3f;
+
 		uint current_frame = 0;
 		uint current_nonlinear_iter = 0;
 		uint current_pcg_it = 0;
